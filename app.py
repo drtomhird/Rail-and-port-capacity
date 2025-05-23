@@ -123,9 +123,10 @@ df_disc, cap_disc = run_scenario(False)
 
 # Results summary
 npv_conn = df_conn['Total'].sum()
-pv_disc = df_disc['Total'].sum()
+npv_disc = df_disc['Total'].sum()
 
 # Summary DataFrame
+
 df_summary = pd.DataFrame([{ 
     'NPV Connected': npv_conn,
     'NPV Disconnected': npv_disc,
