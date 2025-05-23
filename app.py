@@ -17,20 +17,16 @@ num_mines = st.sidebar.number_input("Number of mines", min_value=1, max_value=15
 
 mine_data = []
 for i in range(1, int(num_mines)+1):
-    col1, col2, col3, col4, col5 = st.sidebar.columns([1,1,1,1,1])
+    col1, col2, col3, col4 = st.sidebar.columns(4)
     d = col1.number_input(f"D{i} (km)", value=55 + 10*(i-1), key=f"d{i}")
     o = col2.number_input(f"O{i} (Mtpa)", value=100.0, key=f"o{i}")
     g = col3.number_input(f"g{i} (%)", value=10.0, key=f"g{i}" )/100
     assign = col4.selectbox(f"Port{i} disc", ["DBCT","APPT"], key=f"p{i}")
     mine_data.append({'dist': d, 'out0': o, 'growth': g, 'port_fixed': assign})
 
-# Cost and capacity increments table
+# Cost and capacity increments
 st.sidebar.subheader("Capacity increments & costs")
-inc_cols = st.sidebar.columns([2,1,1,1])
-inc_header = ["Facility","Inc Mtpa","$/Mtpa","Cost per inc"]
-defaults = [
-    ("DBCT",125,10), ("APPT",125,10), ("Rail seg",50,10)
-]
+defaults = [("DBCT",125,10), ("APPT",125,10), ("Rail seg",50,10)]
 increments = {}
 for name, inc0, cost0 in defaults:
     inc = st.sidebar.number_input(f"{name} increment (Mtpa)", value=inc0, key=f"inc_{name}")
@@ -50,7 +46,7 @@ def run_scenario(flexible: bool):
     segments = list(zip(seg_nodes[:-1], seg_nodes[1:]))
     num_segs = len(segments)
 
-    cap_seg = [max(increments['Rail seg']['inc'], increments['Rail seg']['inc']*0)]*num_segs
+    cap_seg = [increments['Rail seg']['inc']] * num_segs
     cap_db = increments['DBCT']['inc']
     cap_ap = increments['APPT']['inc']
 
@@ -62,7 +58,7 @@ def run_scenario(flexible: bool):
     for year in range(0, years+1):
         # grow production
         if year > 0:
-            out = [o*(1+m['growth']) for o, m in zip(out, mine_data)]
+            out = [o*(1+m['growth']) for o,m in zip(out, mine_data)]
         # port assignment
         if flexible:
             ports = []
@@ -77,13 +73,13 @@ def run_scenario(flexible: bool):
         # compute flows
         seg_flow = []
         for a,b in segments:
-            seg_flow.append(sum(o for o, m in zip(out, mine_data) if m['dist']>=b))
+            seg_flow.append(sum(o for o,m in zip(out, mine_data) if m['dist']>=b))
         flow_db = sum(o for o,p in zip(out, ports) if p=='DBCT')
         flow_ap = sum(o for o,p in zip(out, ports) if p=='APPT')
 
         # trigger expansions
         inv_rail = 0.0
-        if any(f>c for f,c in zip(seg_flow, cap_seg)):
+        if any(f>c for f,c in zip(seg_flow,cap_seg)):
             cap_seg = [c+increments['Rail seg']['inc'] for c in cap_seg]
             inv_rail = increments['Rail seg']['inc'] * increments['Rail seg']['unit_cost']
         inv_db = 0.0
@@ -117,7 +113,7 @@ def run_scenario(flexible: bool):
 
     df_costs = pd.DataFrame(records)
     df_cap = pd.DataFrame(cap_over_time)
-    df_costs['Total'] = df_costs.sum(axis=1)
+    df_costs['Total'] = df_costs[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].sum(axis=1)
     df_costs['Cumulative'] = df_costs['Total'].cumsum()
     return df_costs, df_cap
 
@@ -125,25 +121,22 @@ def run_scenario(flexible: bool):
 df_conn, cap_conn = run_scenario(True)
 df_disc, cap_disc = run_scenario(False)
 
-# Compare NPVs
+# Results summary
 npv_conn = df_conn['Total'].sum()
 pv_disc = df_disc['Total'].sum()
-savings = pv_disc - pv_conn = df_disc['Total'].sum() - df_conn['Total'].sum()
 
-# Results summary
+# Summary DataFrame
 df_summary = pd.DataFrame([{ 
     'NPV Connected': npv_conn,
     'NPV Disconnected': npv_disc,
     'Absolute Saving': npv_disc - npv_conn,
-    'Pct Saving': (npv_disc - npv_conn)/npv_disc,
-    'Pct Saving vs APPT Inv': (npv_disc - npv_conn)/ (df_conn['InvAPPT'].sum())
+    'Pct Saving': (npv_disc - npv_conn)/npv_disc
 }])
 
 # --- Outputs ---
 st.header("Results Summary")
 st.dataframe(df_summary)
 
-# Time-series plots
 st.subheader("Cumulative NPV Over Time")
 fig, ax = plt.subplots()
 ax.plot(df_conn['Year'], df_conn['Cumulative'], label='Connected')
@@ -155,22 +148,10 @@ st.pyplot(fig)
 st.subheader("Component NPV Differences Over Time")
 fig2, ax2 = plt.subplots()
 diff = df_disc[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].cumsum() - df_conn[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].cumsum()
-adf = diff.rename(columns={c: c.replace('Inv',''), for c in diff.columns})
 for col in diff.columns:
-    ax2.plot(df_conn['Year'], diff[col].cumsum(), label=col)
+    ax2.plot(df_conn['Year'], diff[col], label=col)
 ax2.set_xlabel('Year'); ax2.set_ylabel('NPV Difference'); ax2.legend()
 st.pyplot(fig2)
-
-st.subheader("Volume Routed to Non-Assigned Port (Connected)")
-vols = []
-for year in df_conn['Year']:
-    # in connected, count volumes where port assignment != fixed
-    # Placeholder: needs tracking in run_scenario
-    vols.append(0)
-fig3, ax3 = plt.subplots()
-ax3.plot(df_conn['Year'], vols)
-ax3.set_xlabel('Year'); ax3.set_ylabel('Volume Non-Assigned')
-st.pyplot(fig3)
 
 # CSV download
 df_out = pd.merge(df_conn[['Year','Total']], df_disc[['Year','Total']], on='Year', suffixes=('_conn','_disc'))
