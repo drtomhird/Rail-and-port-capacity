@@ -172,43 +172,4 @@ st.pyplot(fig2)
 df_out = pd.merge(df_conn[['Year','Total']], df_disc[['Year','Total']], on='Year', suffixes=('_conn','_disc'))
 df_out['Difference'] = df_out['Total_disc'] - df_out['Total_conn']
 st.download_button('Download results CSV', data=df_out.to_csv(index=False), file_name='comparison.csv')
-df_conn, cap_conn = run_scenario(True)
-df_disc, cap_disc = run_scenario(False)
 
-# Results summary
-npv_conn = df_conn['Total'].sum()
-npv_disc = df_disc['Total'].sum()
-
-# Summary DataFrame
-
-df_summary = pd.DataFrame([{ 
-    'NPV Connected': npv_conn,
-    'NPV Disconnected': npv_disc,
-    'Absolute Saving': npv_disc - npv_conn,
-    'Pct Saving': (npv_disc - npv_conn)/npv_disc
-}])
-
-# --- Outputs ---
-st.header("Results Summary")
-st.dataframe(df_summary)
-
-st.subheader("Cumulative NPV Over Time")
-fig, ax = plt.subplots()
-ax.plot(df_conn['Year'], df_conn['Cumulative'], label='Connected')
-ax.plot(df_disc['Year'], df_disc['Cumulative'], label='Disconnected')
-ax.plot(df_disc['Year'], df_disc['Cumulative'] - df_conn['Cumulative'], label='Difference')
-ax.set_xlabel('Year'); ax.set_ylabel('Cumulative NPV'); ax.legend()
-st.pyplot(fig)
-
-st.subheader("Component NPV Differences Over Time")
-fig2, ax2 = plt.subplots()
-diff = df_disc[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].cumsum() - df_conn[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].cumsum()
-for col in diff.columns:
-    ax2.plot(df_conn['Year'], diff[col], label=col)
-ax2.set_xlabel('Year'); ax2.set_ylabel('NPV Difference'); ax2.legend()
-st.pyplot(fig2)
-
-# CSV download
-df_out = pd.merge(df_conn[['Year','Total']], df_disc[['Year','Total']], on='Year', suffixes=('_conn','_disc'))
-df_out['Difference'] = df_out['Total_disc'] - df_out['Total_conn']
-st.download_button('Download results CSV', data=df_out.to_csv(index=False), file_name='comparison.csv')
