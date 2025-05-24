@@ -86,8 +86,7 @@ def simulate(flexible):
         if year > 0:
             out = [o * (1 + m['growth']) for o, m in zip(out, mine_data)]
 
-        # Compute current routing under existing capacities
-                def route_under_caps(c_db, c_ap):
+        # Compute current routing under existing capacities        def route_under_caps(c_db, c_ap):
             # Partial allocation: fill cheaper port first up to capacity, then overflow to other
             routed = []  # list of (volume, port)
             # track used capacity
