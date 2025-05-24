@@ -46,9 +46,23 @@ def run_scenario(flexible: bool):
     segments = list(zip(seg_nodes[:-1], seg_nodes[1:]))
     num_segs = len(segments)
 
-    cap_seg = [increments['Rail seg']['inc']] * num_segs
-    cap_db = increments['DBCT']['inc']
-    cap_ap = increments['APPT']['inc']
+    # Dynamic base capacities: initial Year-0 flows
+    import math
+    initial_out = [m['out0'] for m in mine_data]
+    # Segments initial flows
+    initial_seg_flow = []
+    for a,b in segments:
+        initial_seg_flow.append(sum(o for o,m in zip(initial_out, mine_data) if m['dist']>=b))
+    # Base rail capacity per segment = max(min base cap, rounded up to nearest increment)
+    min_seg = st.sidebar.number_input("Minimum rail segment capacity (Mtpa)", value=200.0)
+    rail_inc = increments['Rail seg']['inc']
+    cap_seg = [max(min_seg, math.ceil(f/rail_inc)*rail_inc) for f in initial_seg_flow]
+    # Base port capacities
+    initial_flow_db = sum(m['out0'] for m in mine_data if m['port_fixed']=='DBCT')
+    initial_flow_ap = sum(m['out0'] for m in mine_data if m['port_fixed']=='APPT')
+    inc_db = increments['DBCT']['inc']; inc_ap = increments['APPT']['inc']
+    cap_db = max(inc_db, math.ceil(initial_flow_db/inc_db)*inc_db)
+    cap_ap = max(inc_ap, math.ceil(initial_flow_ap/inc_ap)*inc_ap)
 
     # prepare time series
     records = []
