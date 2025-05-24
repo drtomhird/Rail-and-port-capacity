@@ -25,7 +25,7 @@ for i in range(int(num_mines)):
     # default port assignment based on nearest: DBCT if closer to 0km, else APPT
     default_idx = 0 if d <= distance_total/2 else 1
     p = st.sidebar.selectbox(f"Mine {i+1} fixed port", ["DBCT", "APPT"], index=default_idx, key=f"p{i}")
-    mine_data.append({'dist': d, 'out0': o, 'growth': g, 'port_fixed': p})({'dist': d, 'out0': o, 'growth': g, 'port_fixed': p})
+    mine_data.append({'dist': d, 'out0': o, 'growth': g, 'port_fixed': p})
 
 # --- Capacity increments & capex ---
 st.sidebar.subheader("Capacity increments & costs")
