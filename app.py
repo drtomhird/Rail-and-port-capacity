@@ -2,174 +2,167 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import math
 
 # --- Sidebar Inputs ---
 st.sidebar.header("Model Inputs")
-
-# General model settings
+# Time horizon
 years = st.sidebar.number_input("Model horizon (years)", min_value=1, max_value=50, value=20)
-discount_rate = st.sidebar.number_input("Discount rate (annual %)", min_value=0.0, value=10.0) / 100
-distance_total = st.sidebar.number_input("Distance DBCT–APPT (km)", min_value=0.0, value=200.0)
+discount_rate = st.sidebar.number_input("Discount rate (%)", min_value=0.0, value=10.0) / 100
+# Rail length
+distance_total = st.sidebar.number_input("Total rail distance (km)", value=200.0)
 
-# Mine table inputs
+# Mine definitions
 st.sidebar.subheader("Mine settings")
-num_mines = st.sidebar.number_input("Number of mines", min_value=1, max_value=15, value=10)
-
 mine_data = []
-for i in range(1, int(num_mines)+1):
-    col1, col2, col3, col4 = st.sidebar.columns(4)
-    d = col1.number_input(f"D{i} (km)", value=55 + 10*(i-1), key=f"d{i}")
-    o = col2.number_input(f"O{i} (Mtpa)", value=100.0, key=f"o{i}")
-    g = col3.number_input(f"g{i} (%)", value=10.0, key=f"g{i}" )/100
-    assign = col4.selectbox(f"Port{i} disc", ["DBCT","APPT"], key=f"p{i}")
-    mine_data.append({'dist': d, 'out0': o, 'growth': g, 'port_fixed': assign})
+num_mines = st.sidebar.number_input("Number of mines", min_value=1, max_value=15, value=10)
+for i in range(int(num_mines)):
+    d = st.sidebar.number_input(f"Mine {i+1} distance (km)", value=55+10*i, key=f"d{i}")
+    o = st.sidebar.number_input(f"Mine {i+1} initial output (Mtpa)", value=100.0, key=f"o{i}")
+    g = st.sidebar.number_input(f"Mine {i+1} growth rate (%)", value=10.0, key=f"g{i}") / 100
+    p = st.sidebar.selectbox(f"Mine {i+1} fixed port", ["DBCT","APPT"], key=f"p{i}")
+    mine_data.append({ 'dist': d, 'out0': o, 'growth': g, 'port_fixed': p })
 
-# Cost and capacity increments
+# Capacity increments and costs
 st.sidebar.subheader("Capacity increments & costs")
-defaults = [("DBCT",125,10), ("APPT",125,10), ("Rail seg",50,10)]
-increments = {}
-for name, inc0, cost0 in defaults:
-    inc = st.sidebar.number_input(f"{name} increment (Mtpa)", value=inc0, key=f"inc_{name}")
-    unit = st.sidebar.number_input(f"{name} capex ($/Mtpa)", value=cost0, key=f"cap_{name}")
-    increments[name] = {'inc': inc, 'unit_cost': unit}
+rail_inc = st.sidebar.number_input("Rail increment (Mtpa)", value=50.0)
+rail_cost = st.sidebar.number_input("Rail capex ($/Mtpa)", value=1000.0)
+port_inc_db = st.sidebar.number_input("DBCT increment (Mtpa)", value=125.0)
+port_cost_db = st.sidebar.number_input("DBCT capex ($/Mtpa)", value=2000.0)
+port_inc_ap = st.sidebar.number_input("APPT increment (Mtpa)", value=125.0)
+port_cost_ap = st.sidebar.number_input("APPT capex ($/Mtpa)", value=2000.0)
 
-# Throughput costs
-st.sidebar.subheader("Throughput costs")
-haulage_cost = st.sidebar.number_input("Haulage ($/Mt·km)", value=1.0)
-handling_cost_dbct = st.sidebar.number_input("DBCT handling ($/Mt)", value=1.0)
-handling_cost_appt = st.sidebar.number_input("APPT handling ($/Mt)", value=1.0)
+# Operating cost rates
+st.sidebar.subheader("Operating cost rates")
+haul_rate = st.sidebar.number_input("Haulage cost ($/Mt·km)", value=1.0)
+handle_rate_db = st.sidebar.number_input("DBCT handling cost ($/Mt)", value=1.0)
+handle_rate_ap = st.sidebar.number_input("APPT handling cost ($/Mt)", value=1.0)
 
-# Base capacity inputs (dynamic based on year-0 flows)
-import math
-# Compute Year-0 flows outside function to seed capacities
-seg_nodes_init = [0] + [m['out0'] for m in mine_data] + [distance_total]
-# But we need distances, not out0 for nodes. Let's recompute segments initial here
-seg_nodes = [0] + [m['dist'] for m in mine_data] + [distance_total]
-segments = list(zip(seg_nodes[:-1], seg_nodes[1:]))
-# Initial segment flows
-initial_out = [m['out0'] for m in mine_data]
-initial_seg_flow = [sum(o for o,m in zip(initial_out, mine_data) if m['dist']>=b) for (a,b) in segments]
-# Minimum base capacity inputs
-min_seg = st.sidebar.number_input("Minimum rail segment capacity (Mtpa)", value=200.0)
-rail_inc = increments['Rail seg']['inc']
-# Seed base rail capacities
-base_cap_seg = [max(min_seg, math.ceil(f/rail_inc)*rail_inc) for f in initial_seg_flow]
-# Seed base port capacities
-initial_flow_db = sum(m['out0'] for m in mine_data if m['port_fixed']=='DBCT')
-initial_flow_ap = sum(m['out0'] for m in mine_data if m['port_fixed']=='APPT')
-inc_db = increments['DBCT']['inc']; inc_ap = increments['APPT']['inc']
-base_cap_db = max(inc_db, math.ceil(initial_flow_db/inc_db)*inc_db)
-base_cap_ap = max(inc_ap, math.ceil(initial_flow_ap/inc_ap)*inc_ap)
+# Build segments
+nodes = [0] + [m['dist'] for m in mine_data] + [distance_total]
+segments = list(zip(nodes[:-1], nodes[1:]))
 
-# --- Helper function: run scenario ---
-def run_scenario(flexible: bool):
-    # Initialize capacities and results
-    cap_seg = base_cap_seg.copy()
-    cap_db = base_cap_db
-    cap_ap = base_cap_ap
-    records = []
-    cap_over_time = []
+# Year-0 flows for seeding base capacity
+init_out = [m['out0'] for m in mine_data]
+seg_flow0 = [sum(o for o,m in zip(init_out, mine_data) if m['dist'] >= b) for (_,b) in segments]
+flow_db0 = sum(m['out0'] for m in mine_data if m['port_fixed']=='DBCT')
+flow_ap0 = sum(m['out0'] for m in mine_data if m['port_fixed']=='APPT')
+
+# Seed base capacities
+min_rail = rail_inc * 4
+base_seg_cap = [max(min_rail, math.ceil(f/rail_inc)*rail_inc) for f in seg_flow0]
+base_db_cap = max(port_inc_db, math.ceil(flow_db0/port_inc_db)*port_inc_db)
+base_ap_cap = max(port_inc_ap, math.ceil(flow_ap0/port_inc_ap)*port_inc_ap)
+
+# Generate possible build actions (r,d,a total <=2)
+def gen_actions():
+    actions=[]
+    for r in range(3):
+        for d in range(3):
+            for a in range(3):
+                if r + d + a <= 2:
+                    actions.append((r,d,a))
+    return actions
+actions = gen_actions()
+
+# Simulation function
+
+def simulate(flexible):
+    seg_cap = base_seg_cap.copy()
+    db_cap = base_db_cap
+    ap_cap = base_ap_cap
+    records=[]
+    # copy outputs so original not mutated
     out = [m['out0'] for m in mine_data]
 
-    for year in range(0, years+1):
-        # grow production
+    for year in range(years+1):
+        # grow outputs
         if year > 0:
             out = [o*(1+m['growth']) for o,m in zip(out, mine_data)]
-        # port assignment
+        # determine routing
+        ports=[]
         if flexible:
-            ports = []
-            for m,o in zip(mine_data, out):
-                d = m['dist']
-                cost_db = d*haulage_cost + handling_cost_dbct
-                cost_ap = (distance_total-d)*haulage_cost + handling_cost_appt
-                ports.append('DBCT' if cost_db <= cost_ap else 'APPT')
+            for o,m in zip(out, mine_data):
+                # cost if DBCT
+                cost_db = m['dist']*haul_rate + handle_rate_db
+                cost_ap = (distance_total-m['dist'])*haul_rate + handle_rate_ap
+                choice = 'DBCT' if cost_db <= cost_ap else 'APPT'
+                # capacity check
+                flow_db = sum(o2 for o2,p in zip(ports, ports) if p=='DBCT')
+                flow_ap = sum(o2 for o2,p in zip(ports, ports) if p=='APPT')
+                if choice=='DBCT' and flow_db + o > db_cap:
+                    choice = 'APPT'
+                elif choice=='APPT' and flow_ap + o > ap_cap:
+                    choice = 'DBCT'
+                ports.append(choice)
         else:
             ports = [m['port_fixed'] for m in mine_data]
-
-        # compute flows
-        seg_flow = [sum(o for o,m in zip(out, mine_data) if m['dist']>=b) for (a,b) in segments]
-        flow_db = sum(o for o,p in zip(out, ports) if p=='DBCT')
-        flow_ap = sum(o for o,p in zip(out, ports) if p=='APPT')
-
-        # trigger expansions
-        inv_rail = 0.0
-        for idx,(f,c) in enumerate(zip(seg_flow, cap_seg)):
-            if f > c:
-                cap_seg[idx] += rail_inc
-                inv_rail += rail_inc * increments['Rail seg']['unit_cost']
-        inv_db = 0.0
-        if flow_db > cap_db:
-            cap_db += inc_db
-            inv_db = inc_db * increments['DBCT']['unit_cost']
-        inv_ap = 0.0
-        if flow_ap > cap_ap:
-            cap_ap += inc_ap
-            inv_ap = inc_ap * increments['APPT']['unit_cost']
-
-        # operational costs mid-year
-        haul = sum(o*m['dist']*haulage_cost for o,m in zip(out, mine_data)) + sum(o*(distance_total-m['dist'])*haulage_cost for o,m,p in zip(out, mine_data, ports) if p=='APPT')
-        handle_db = sum(o for o,p in zip(out, ports) if p=='DBCT')*handling_cost_dbct
-        handle_ap = sum(o for o,p in zip(out, ports) if p=='APPT')*handling_cost_appt
-
-        # discount
-        df = (1+discount_rate)**year
-        dfm = (1+discount_rate)**(year+0.5)
-        record = {
+        # flows
+        seg_flow = [sum(o for o,m in zip(out, mine_data) if m['dist'] >= b) for (_,b) in segments]
+        db_flow = sum(o for o,p in zip(out, ports) if p=='DBCT')
+        ap_flow = sum(o for o,p in zip(out, ports) if p=='APPT')
+        # choose best build action
+        best=None; best_val=1e18
+        for r,d,a in actions:
+            # hypothetical capacities
+            h_seg = [c + r*rail_inc for c in seg_cap]
+            h_db = db_cap + d*port_inc_db
+            h_ap = ap_cap + a*port_inc_ap
+            # capex
+            capex = (r*rail_inc*rail_cost + d*port_inc_db*port_cost_db + a*port_inc_ap*port_cost_ap) / ((1+discount_rate)**year)
+            # operating costs mid-year\            haul = sum(o*(m['dist'] if ports[i]=='DBCT' else distance_total-m['dist'])*haul_rate for i,(o,m) in enumerate(zip(out,mine_data)))
+            handle = sum(o*(handle_rate_db if ports[i]=='DBCT' else handle_rate_ap) for i,o in enumerate(out)) / ((1+discount_rate)**(year+0.5))
+            val = capex + haul + handle
+            if val < best_val:
+                best_val=val; best=(r,d,a)
+        # apply best
+        r,d,a = best
+        seg_cap = [c + r*rail_inc for c in seg_cap]
+        db_cap += d*port_inc_db
+        ap_cap += a*port_inc_ap
+        # record
+        records.append({
             'Year': year,
-            'InvRail': inv_rail/df,
-            'InvDBCT': inv_db/df,
-            'InvAPPT': inv_ap/df,
-            'OpHaul': haul/dfm,
-            'OpDBCT': handle_db/dfm,
-            'OpAPPT': handle_ap/dfm
-        }
-        records.append(record)
-        cap_over_time.append({'Year': year, **{f'Seg{i+1}': c for i,c in enumerate(cap_seg)}, 'CapDBCT': cap_db, 'CapAPPT': cap_ap})
-
-    df_costs = pd.DataFrame(records)
-    df_cap = pd.DataFrame(cap_over_time)
-    df_costs['Total'] = df_costs[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].sum(axis=1)
-    df_costs['Cumulative'] = df_costs['Total'].cumsum()
-    return df_costs, df_cap
+            'RailInv': r*rail_inc*rail_cost,
+            'PortInvDB': d*port_inc_db*port_cost_db,
+            'PortInvAP': a*port_inc_ap*port_cost_ap,
+            'OpHaul': haul,
+            'OpHandle': handle,
+            'NPV': best_val
+        })
+    df = pd.DataFrame(records)
+    df['CumulativeNPV'] = df['NPV'].cumsum()
+    return df
 
 # Run both scenarios
-[df_conn, cap_conn] = run_scenario(True)
-[df_disc, cap_disc] = run_scenario(False)
+df_fixed = simulate(False)
+df_flex = simulate(True)
 
-# Results summary
-npv_conn = df_conn['Total'].sum()
-npv_disc = df_disc['Total'].sum()
-
-df_summary = pd.DataFrame([{ 
-    'NPV Connected': npv_conn,
-    'NPV Disconnected': npv_disc,
-    'Absolute Saving': npv_disc - npv_conn,
-    'Pct Saving': (npv_disc - npv_conn)/npv_disc
+# Summary table
+df_sum = pd.DataFrame([{
+    'NPV Fixed': df_fixed['NPV'].sum(),
+    'NPV Flexible': df_flex['NPV'].sum(),
+    'Saving': df_fixed['NPV'].sum() - df_flex['NPV'].sum()
 }])
 
-# --- Outputs ---
+# Outputs
 st.header("Results Summary")
-st.dataframe(df_summary)
+st.dataframe(df_sum)
 
 st.subheader("Cumulative NPV Over Time")
-fig, ax = plt.subplots()
-ax.plot(df_conn['Year'], df_conn['Cumulative'], label='Connected')
-ax.plot(df_disc['Year'], df_disc['Cumulative'], label='Disconnected')
-ax.plot(df_disc['Year'], df_disc['Cumulative'] - df_conn['Cumulative'], label='Difference')
-ax.set_xlabel('Year'); ax.set_ylabel('Cumulative NPV'); ax.legend()
+fig,ax = plt.subplots()
+ax.plot(df_fixed['Year'], df_fixed['CumulativeNPV'], label='Fixed')
+ax.plot(df_flex['Year'], df_flex['CumulativeNPV'], label='Flexible')
+ax.legend()
 st.pyplot(fig)
 
-st.subheader("Component NPV Differences Over Time")
-fig2, ax2 = plt.subplots()
-diff = df_disc[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].cumsum() - df_conn[['InvRail','InvDBCT','InvAPPT','OpHaul','OpDBCT','OpAPPT']].cumsum()
-for col in diff.columns:
-    ax2.plot(df_conn['Year'], diff[col], label=col)
-ax2.set_xlabel('Year'); ax2.set_ylabel('NPV Difference'); ax2.legend()
-st.pyplot(fig2)
+st.subheader("Year-0 Breakdown by Category")
+b0_fixed = df_fixed.loc[0, ['RailInv','PortInvDB','PortInvAP','OpHaul','OpHandle']]
+b0_flex  = df_flex.loc[0,  ['RailInv','PortInvDB','PortInvAP','OpHaul','OpHandle']]
+df_break = pd.DataFrame({'Fixed': b0_fixed, 'Flexible': b0_flex})
+st.dataframe(df_break)
 
 # CSV download
-
-df_out = pd.merge(df_conn[['Year','Total']], df_disc[['Year','Total']], on='Year', suffixes=('_conn','_disc'))
-df_out['Difference'] = df_out['Total_disc'] - df_out['Total_conn']
-st.download_button('Download results CSV', data=df_out.to_csv(index=False), file_name='comparison.csv')
-
+df_out = df_fixed[['Year','NPV']].merge(df_flex[['Year','NPV']], on='Year', suffixes=('_fixed','_flex'))
+df_out['Diff'] = df_out['NPV_fixed'] - df_out['NPV_flex']
+st.download_button('Download CSV', data=df_out.to_csv(index=False), file_name='model_compare.csv', key='download')
