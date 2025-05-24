@@ -88,26 +88,36 @@ def simulate(flexible):
 
         # Compute current routing under existing capacities
         def route_under_caps(c_db, c_ap):
-            routed = []
-            for o, m in zip(out, mine_data):
-                # cost-based choice
-                cost_db = m['dist'] * haul_rate + handle_rate_db
-                cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
-                if cost_db < cost_ap:
-                    choice = 'DBCT'
-                elif cost_ap < cost_db:
-                    choice = 'APPT'
-                else:
-                    choice = m['port_fixed']
-                # capacity check
-                flow_db = sum(q for q, p in routed if p == 'DBCT')
-                flow_ap = sum(q for q, p in routed if p == 'APPT')
-                if choice == 'DBCT' and flow_db + o > c_db:
-                    choice = 'APPT'
-                elif choice == 'APPT' and flow_ap + o > c_ap:
-                    choice = 'DBCT'
-                routed.append((o, choice))
-            return routed
+    # Allocate mines partially when port capacity insufficient
+    # First, group mines by fixed choice cost ranking
+    # Sort mines by distance proximity to DBCT and APPT
+    # But simplest: iterate nearest-to-port order for non-expanding port
+    # Build lists for initial assignment
+    routed = []  # list of (volume, port)
+    # Determine order for filling non-expanding ports
+    # We'll fill DBCT first if c_db < c_ap else APPT
+    # But here for partial: allocate to both accordingly
+    for o, m in zip(out, mine_data):
+        # cost-based preference
+        cost_db = m['dist'] * haul_rate + handle_rate_db
+        cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
+        # initial desired port
+        if cost_db < cost_ap:
+            primary, secondary = 'DBCT', 'APPT'
+        elif cost_ap < cost_db:
+            primary, secondary = 'APPT', 'DBCT'
+        else:
+            primary, secondary = m['port_fixed'], ('APPT' if m['port_fixed']=='DBCT' else 'DBCT')
+        # allocate to primary up to its remaining cap
+        rem_p = c_db - sum(q for q,p in routed if p==primary) if primary=='DBCT' else c_ap - sum(q for q,p in routed if p==primary)
+        vol_primary = min(o, max(rem_p,0))
+        routed.append((vol_primary, primary))
+        # allocate leftover to secondary
+        rem_s = c_ap - sum(q for q,p in routed if p=='APPT') if primary=='DBCT' else c_db - sum(q for q,p in routed if p=='DBCT')
+        vol_secondary = o - vol_primary
+        if vol_secondary>0:
+            routed.append((vol_secondary, secondary))
+    return routed
 
         # Decide on best build action by minimizing immediate NPV with re-routing under each hypothetical
         best_val = float('inf')
