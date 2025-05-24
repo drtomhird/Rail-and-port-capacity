@@ -158,16 +158,7 @@ def simulate(flexible):
     return df
 
 # --- Run both scenarios ---
-df_fixed = simulate(False)
-df_flex = simulate(True)
-
-# --- Summary table ---
-df_sum = pd.DataFrame([{
-    'NPV Fixed': df_fixed['NPVYear'].sum(),
-    'NPV Flexible': df_flex['NPVYear'].sum(),
-    'Saving': df_fixed['NPVYear'].sum() - df_flex['NPVYear'].sum()
-}])
-
+# --- Run both scenarios ---
 df_fixed = simulate(False)
 df_flex = simulate(True)
 
