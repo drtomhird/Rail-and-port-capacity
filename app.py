@@ -22,8 +22,10 @@ for i in range(int(num_mines)):
     d = st.sidebar.number_input(f"Mine {i+1} distance (km)", value=55 + 10*i, key=f"d{i}")
     o = st.sidebar.number_input(f"Mine {i+1} initial output (Mtpa)", value=100.0, key=f"o{i}")
     g = st.sidebar.number_input(f"Mine {i+1} growth rate (%)", value=10.0, key=f"g{i}") / 100
-    p = st.sidebar.selectbox(f"Mine {i+1} fixed port", ["DBCT", "APPT"], key=f"p{i}")
-    mine_data.append({'dist': d, 'out0': o, 'growth': g, 'port_fixed': p})
+    # default port assignment based on nearest: DBCT if closer to 0km, else APPT
+    default_idx = 0 if d <= distance_total/2 else 1
+    p = st.sidebar.selectbox(f"Mine {i+1} fixed port", ["DBCT", "APPT"], index=default_idx, key=f"p{i}")
+    mine_data.append({'dist': d, 'out0': o, 'growth': g, 'port_fixed': p})({'dist': d, 'out0': o, 'growth': g, 'port_fixed': p})
 
 # --- Capacity increments & capex ---
 st.sidebar.subheader("Capacity increments & costs")
@@ -91,7 +93,13 @@ def simulate(flexible):
                 # compute cost to each port
                 cost_db = m['dist'] * haul_rate + handle_rate_db
                 cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
-                choice = 'DBCT' if cost_db <= cost_ap else 'APPT'
+                # tie-break: if cost equal, keep fixed assignment
+                if cost_db < cost_ap:
+                    choice = 'DBCT'
+                elif cost_ap < cost_db:
+                    choice = 'APPT'
+                else:
+                    choice = m['port_fixed']
                 # check capacity availability
                 flow_db = sum(o2 for o2, p in zip(out[:len(ports)], ports) if p == 'DBCT')
                 flow_ap = sum(o2 for o2, p in zip(out[:len(ports)], ports) if p == 'APPT')
