@@ -106,11 +106,17 @@ def compute_flexible_expansions(
         else:
             alloc_ap += 1
 
-        # track diversion and haul cost
-        diverted_db = max(0, fixed_db - alloc_db) * plump_size
-        diverted_ap = max(0, fixed_ap - alloc_ap) * plump_size
+                # track diversion as actual deferred volume (not full plump size)
+        deficit_dbct = demand_dbct - (capacities[-1][0] if capacities else initial_capacities[0])
+        deficit_appt = demand_appt - (capacities[-1][1] if capacities else initial_capacities[1])
+        # actual diverted is min(deferred_plumps*plump_size, initial deficit)
+        diverted_db = min((fixed_db - alloc_db) * plump_size, max(0, demand_dbct - (cap_dbct)))
+        diverted_ap = min((fixed_ap - alloc_ap) * plump_size, max(0, demand_appt - (cap_appt)))
         diversion = diverted_db + diverted_ap
-        haul_cost = (diverted_db / plump_size) * cheap_db + (diverted_ap / plump_size) * cheap_ap
+        # haul cost per unit km factor
+        unit_cost_db = cheap_db / plump_size
+        unit_cost_ap = cheap_ap / plump_size
+        haul_cost = diverted_db * unit_cost_db + diverted_ap * unit_cost_ap
 
         # apply expansions
         cap_dbct += alloc_db * plump_size
