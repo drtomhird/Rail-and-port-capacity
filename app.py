@@ -37,7 +37,6 @@ def compute_haulage_costs(assignments, haulage_rate, mines):
 
 
 def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
-    """Always expand each port individually when local demand > capacity"""
     results = {'port_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
         outputs = compute_yearly_outputs(mines, year)
@@ -64,7 +63,6 @@ def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discou
 
 
 def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
-    """Allocate system-wide plumps then reroute to ports with excess capacity"""
     results = {'port_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
         outputs = compute_yearly_outputs(mines, year)
@@ -174,6 +172,22 @@ if st.sidebar.button("Run simulation"):
         y=alt.Y('Cost Difference:Q', title='Cumulative Haulage Cost Difference ($)')
     ).properties(width=700, height=300, title='Cumulative Haulage Cost Difference')
     st.altair_chart(chart2, use_container_width=True)
+
+    # Chart 3: Present Value of Cost Differences to each Year
+    port_diff_year = df_fixed['port_cost'] - df_flex['port_cost']
+    haul_diff_year = df_fixed['haulage_cost'] - df_flex['haulage_cost']
+    years_idx = port_diff_year.index.values
+    pv_values = []
+    for t in years_idx:
+        pv_port = sum(port_diff_year.iloc[:t+1] / ((1 + DISCOUNT_RATE) ** years_idx[:t+1]))
+        pv_haul = sum(haul_diff_year.iloc[:t+1] / ((1 + DISCOUNT_RATE) ** years_idx[:t+1]))
+        pv_values.append(pv_port + pv_haul)
+    pv_df = pd.DataFrame({'Year': years_idx, 'PV Cost Difference': pv_values})
+    chart3 = alt.Chart(pv_df).mark_line(point=True).encode(
+        x=alt.X('Year:Q', title='Year'),
+        y=alt.Y('PV Cost Difference:Q', title='Present Value of Cost Difference ($)')
+    ).properties(width=700, height=300, title='PV of Fixed vs Flexible Cost Differences Over Time')
+    st.altair_chart(chart3, use_container_width=True)
 
     # NPV summary and download
     npv_diff = compute_npv(fixed['total_cost'], DISCOUNT_RATE) - compute_npv(flex['total_cost'], DISCOUNT_RATE)
