@@ -32,7 +32,7 @@ def compute_haulage_costs(assignments, haulage_rate, mines):
             total += dist * haulage_rate * vol
     return total
 
-# Fixed model tracks total and individual port costs
+# Fixed model tracks DBCT, APPT and haulage costs
 def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
     results = { 'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {} }
     for year in range(years + 1):
@@ -91,7 +91,6 @@ def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_
             cost = chunks * exp_cost
             if p.name=='DBCT': dbct_cost += cost
             else: appt_cost += cost
-        # reroute
         usage = {p.name: sum(assignments[p.name].values()) for p in ports}
         for p in ports:
             if usage[p.name] > p.capacity:
@@ -157,39 +156,43 @@ if st.sidebar.button("Run simulation"):
     df_f = pd.DataFrame(fixed)
     df_x = pd.DataFrame(flex)
 
-    # NPV and percentage
+    # Compute NPVs
     npv_diff = compute_npv(df_f['total_cost'],DISCOUNT_RATE) - compute_npv(df_x['total_cost'],DISCOUNT_RATE)
-    pv_appt = compute_npv(df_f['appt_cost'],DISCOUNT_RATE)
-    pct = npv_diff/pv_appt*100
+    pv_appt_fixed = compute_npv(df_f['appt_cost'],DISCOUNT_RATE)
+    pv_appt_flex  = compute_npv(df_x['appt_cost'],DISCOUNT_RATE)
+    pct = npv_diff / pv_appt_fixed * 100
+    npv_appt_diff = pv_appt_fixed - pv_appt_flex
 
-    st.subheader(f"NPV difference (Fixed - Flexible) at {YEARS} years = {npv_diff:.2f}")
-    st.subheader(f"NPV difference as % of APPT PV of APPT port expansion costs = {pct:.2f}%")
+    # Display results
+    st.subheader(f"Total NPV difference (Fixed - Flexible) at {YEARS} years = {npv_diff:.2f}")
+    st.subheader(f"{npv_diff:.2f} as % of PV of APPT port expansion costs = {pct:.2f}%")
+    st.subheader(f"NPV of APPT port expansion costs (Fixed - Flexible) = {npv_appt_diff:.2f}")
 
-    # Chart 1
-    st.subheader("Cumulative Port-Expansion Cost Difference ($)")
+    # Chart 1: APPT expansion diff
+    st.subheader("Cumulative APPT Port-Expansion Cost Difference ($)")
     port_diff = df_f['appt_cost'].cumsum() - df_x['appt_cost'].cumsum()
-    port_df = pd.DataFrame({'Year':port_diff.index,'Cost Diff':port_diff.values})
-    ch1=alt.Chart(port_df).mark_bar().encode(x='Year:O',y='Cost Diff:Q')
-    st.altair_chart(ch1,use_container_width=True)
+    port_df = pd.DataFrame({'Year': port_diff.index, 'Cost Diff': port_diff.values})
+    ch1 = alt.Chart(port_df).mark_bar().encode(x='Year:O', y='Cost Diff:Q')
+    st.altair_chart(ch1, use_container_width=True)
 
-    # Chart 2
+    # Chart 2: Haulage diff
     st.subheader("Cumulative Haulage Cost Difference ($)")
     haul_diff = df_f['haulage_cost'].cumsum() - df_x['haulage_cost'].cumsum()
-    haul_df = pd.DataFrame({'Year':haul_diff.index,'Cost Diff':haul_diff.values})
-    ch2=alt.Chart(haul_df).mark_line(point=True).encode(x='Year:Q',y='Cost Diff:Q')
-    st.altair_chart(ch2,use_container_width=True)
+    haul_df = pd.DataFrame({'Year': haul_diff.index, 'Cost Diff': haul_diff.values})
+    ch2 = alt.Chart(haul_df).mark_line(point=True).encode(x='Year:Q', y='Cost Diff:Q')
+    st.altair_chart(ch2, use_container_width=True)
 
-    # Chart 3
+    # Chart 3: PV over time
     st.subheader("Present Value of Cost Differences Over Time ($)")
     perf = []
     for t in range(YEARS+1):
-        pv_port = sum((df_f['appt_cost']-df_x['appt_cost']).iloc[:t+1]/((1+DISCOUNT_RATE)**np.arange(t+1)))
-        pv_h   = sum((df_f['haulage_cost']-df_x['haulage_cost']).iloc[:t+1]/((1+DISCOUNT_RATE)**np.arange(t+1)))
-        perf.append(pv_port+pv_h)
-    pv_df=pd.DataFrame({'Year':range(YEARS+1),'PV Diff':perf})
-    ch3=alt.Chart(pv_df).mark_line(point=True).encode(x='Year:Q',y='PV Diff:Q')
-    st.altair_chart(ch3,use_container_width=True)
+        pv_port = sum((df_f['appt_cost']-df_x['appt_cost']).iloc[:t+1] / ((1+DISCOUNT_RATE)**np.arange(t+1)))
+        pv_h   = sum((df_f['haulage_cost']-df_x['haulage_cost']).iloc[:t+1] / ((1+DISCOUNT_RATE)**np.arange(t+1)))
+        perf.append(pv_port + pv_h)
+    pv_df = pd.DataFrame({'Year': range(YEARS+1), 'PV Diff': perf})
+    ch3 = alt.Chart(pv_df).mark_line(point=True).encode(x='Year:Q', y='PV Diff:Q')
+    st.altair_chart(ch3, use_container_width=True)
 
     # Download
-    combined=pd.concat([df_f.add_prefix('fixed_'),df_x.add_prefix('flex_')],axis=1)
-    st.download_button("Download CSV",combined.to_csv(index=False),file_name='results.csv')
+    combined = pd.concat([df_f.add_prefix('fixed_'), df_x.add_prefix('flex_')], axis=1)
+    st.download_button("Download CSV", combined.to_csv(index=False), file_name='results.csv')
