@@ -46,18 +46,21 @@ def compute_flexible_expansions(
     years
 ):
     """
-    Flexible model: in each year,
-    1. compute total_plumps = ceil((system_demand - total_capacity) / plump_size)
-    2. allocate the first total_plumps-1 to fully meet each port's fixed deficit
-    3. assign the final plump to the port with larger remaining deficit
+    Flexible model: in each year, computes the minimum plumps needed and allocates efficiently:
+    1. Determine total_plumps = ceil((system_demand - system_capacity)/plump_size)
+    2. Allocate the first (total_plumps - 1) to cover each port's fixed deficits
+    3. Assign the final plump to the port with the larger remaining deficit
     """
     cap_dbct, cap_appt = initial_capacities
-    expansions, capacities, demands = [], [], []
-    diversions, hauling_costs = [], []
+    expansions, capacities, demands, diversions, hauling_costs = [], [], [], [], []
 
+    # Precompute assignment mask and extra distances
     use_dbct = distances[:,0] <= distances[:,1]
     extra_dist_dbct = distances[:,1] - distances[:,0]
     extra_dist_appt = distances[:,0] - distances[:,1]
+    # Precompute cheapest extra distance cost per plump
+    cheap_db = plump_size * haul_cost_per_unit_km * (np.min(extra_dist_dbct[use_dbct]) if np.any(use_dbct) else 0)
+    cheap_ap = plump_size * haul_cost_per_unit_km * (np.min(extra_dist_appt[~use_dbct]) if np.any(~use_dbct) else 0)
 
     for t in range(1, years+1):
         outputs_t = outputs * ((1 + growth_rates) ** t)
@@ -66,7 +69,7 @@ def compute_flexible_expansions(
         total_demand = demand_dbct + demand_appt
         total_capacity = cap_dbct + cap_appt
 
-        # 1. minimum plumps needed
+        # 1. calculate minimum plumps needed
         shortage = max(0, total_demand - total_capacity)
         total_plumps = int(np.ceil(shortage / plump_size))
         if total_plumps == 0:
@@ -78,41 +81,36 @@ def compute_flexible_expansions(
             continue
 
         # fixed deficits
-        fixed_dbct = int(np.ceil(max(0, demand_dbct - cap_dbct) / plump_size))
-        fixed_appt = int(np.ceil(max(0, demand_appt - cap_appt) / plump_size))
+        fixed_db = int(np.ceil(max(0, demand_dbct - cap_dbct) / plump_size))
+        fixed_ap = int(np.ceil(max(0, demand_appt - cap_appt) / plump_size))
 
-        # 2. allocate first total_plumps-1 to meet deficits
-        alloc_db = min(fixed_dbct, total_plumps - 1)
-        alloc_ap = min(fixed_appt, total_plumps - 1 - alloc_db)
-
-        remaining = (total_plumps - 1) - (alloc_db + alloc_ap)
-        if remaining > 0:
-            # allocate leftover to port with larger remaining fixed deficit
-            rem_def_db = fixed_dbct - alloc_db
-            rem_def_ap = fixed_appt - alloc_ap
+        # 2. allocate first total_plumps-1
+        alloc_db = min(fixed_db, total_plumps - 1)
+        alloc_ap = min(fixed_ap, total_plumps - 1 - alloc_db)
+        rem = (total_plumps - 1) - (alloc_db + alloc_ap)
+        if rem > 0:
+            rem_def_db = fixed_db - alloc_db
+            rem_def_ap = fixed_ap - alloc_ap
             if rem_def_db >= rem_def_ap:
-                add_db = min(remaining, rem_def_db)
+                add_db = min(rem, rem_def_db)
                 alloc_db += add_db
-                remaining -= add_db
-            if remaining > 0:
-                alloc_ap += remaining
+                rem -= add_db
+            if rem > 0:
+                alloc_ap += rem
 
-        # 3. assign final plump by comparing remaining deficits
-        rem_def_db = max(0, demand_dbct - (cap_dbct + alloc_db * plump_size))
-        rem_def_ap = max(0, demand_appt - (cap_appt + alloc_ap * plump_size))
-        if rem_def_db >= rem_def_ap:
+        # 3. assign final plump to port with larger remaining deficit
+        rem_db = max(0, demand_dbct - (cap_dbct + alloc_db * plump_size))
+        rem_ap = max(0, demand_appt - (cap_appt + alloc_ap * plump_size))
+        if rem_db >= rem_ap:
             alloc_db += 1
         else:
             alloc_ap += 1
 
-        # record diversion and haul cost for deferred plumps
-        diverted_db = max(0, fixed_dbct - alloc_db) * plump_size
-        diverted_ap = max(0, fixed_appt - alloc_ap) * plump_size
-        # use cheapest extra distance for cost
-        cost_db = plump_size * haul_cost_per_unit_km * (np.min(extra_dist_dbct[use_dbct]) if np.any(use_dbct) else 0)
-        cost_ap = plump_size * haul_cost_per_unit_km * (np.min(extra_dist_appt[~use_dbct]) if np.any(~use_dbct) else 0)
+        # track diversion and haul cost
+        diverted_db = max(0, fixed_db - alloc_db) * plump_size
+        diverted_ap = max(0, fixed_ap - alloc_ap) * plump_size
         diversion = diverted_db + diverted_ap
-        haul_cost = (diverted_db / plump_size) * cost_db + (diverted_ap / plump_size) * cost_ap
+        haul_cost = (diverted_db / plump_size) * cheap_db + (diverted_ap / plump_size) * cheap_ap
 
         # apply expansions
         cap_dbct += alloc_db * plump_size
