@@ -1,7 +1,8 @@
 import numpy as np
 import streamlit as st
 
-def compute_fixed_expansions(
+@st.cache_data
+    def compute_fixed_expansions(
     distances, outputs, growth_rates,
     initial_capacities, plump_size, plump_cost,
     years
