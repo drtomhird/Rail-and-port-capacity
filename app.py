@@ -81,7 +81,32 @@ def simulate(flexible):
     # Copy outputs
     out = [m['out0'] for m in mine_data]
 
-    for year in range(years + 1):
+    # helper: partial routing under caps
+    def route_under_caps(c_db, c_ap):
+        routed = []
+        used = {'DBCT': 0.0, 'APPT': 0.0}
+        for o, m in zip(out, mine_data):
+            cost_db = m['dist'] * haul_rate + handle_rate_db
+            cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
+            if cost_db < cost_ap:
+                prim, sec = 'DBCT', 'APPT'
+            elif cost_ap < cost_db:
+                prim, sec = 'APPT', 'DBCT'
+            else:
+                prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
+            # allocate to primary
+            avail_p = (c_db if prim=='DBCT' else c_ap) - used[prim]
+            v1 = max(0.0, min(o, avail_p))
+            routed.append((v1, prim)); used[prim] += v1
+            # leftover to secondary
+            v2 = o - v1
+            if v2>0:
+                avail_s = (c_ap if sec=='APPT' else c_db) - used[sec]
+                v2a = max(0.0, min(v2, avail_s))
+                routed.append((v2a, sec)); used[sec] += v2a
+        return routed
+
+    for year in range(years + 1):(years + 1):
         # Grow outputs
         if year > 0:
             out = [o * (1 + m['growth']) for o, m in zip(out, mine_data)]
