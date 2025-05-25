@@ -82,19 +82,23 @@ def simulate(flexible):
     out = [m['out0'] for m in mine_data]
 
     # helper: partial routing under caps
-    def route_under_caps(c_db, c_ap, local_out):
+    def route_under_caps(c_db, c_ap, local_out, flexible):
         routed = []
         used = {'DBCT': 0.0, 'APPT': 0.0}
         for o, m in zip(local_out, mine_data):
-            # cost-based preference
-            cost_db = m['dist'] * haul_rate + handle_rate_db
-            cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
-            if cost_db < cost_ap:
-                prim, sec = 'DBCT', 'APPT'
-            elif cost_ap < cost_db:
-                prim, sec = 'APPT', 'DBCT'
+            # Determine primary/secondary based on routing mode
+            if flexible:
+                cost_db = m['dist'] * haul_rate + handle_rate_db
+                cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
+                if cost_db < cost_ap:
+                    prim, sec = 'DBCT', 'APPT'
+                elif cost_ap < cost_db:
+                    prim, sec = 'APPT', 'DBCT'
+                else:
+                    prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
             else:
-                prim = m['port_fixed']; sec = 'APPT' if prim == 'DBCT' else 'DBCT'
+                # Fixed: always use original port
+                prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
             # allocate to primary
             avail_p = (c_db if prim == 'DBCT' else c_ap) - used[prim]
             v1 = max(0.0, min(o, avail_p))
