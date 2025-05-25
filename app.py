@@ -125,7 +125,7 @@ def simulate(flexible):
             h_db = db_cap + d * port_inc_db
             h_ap = ap_cap + a * port_inc_ap
             # Re-route under hypothetical port caps
-            routed = route_under_caps(h_db, h_ap, out)
+            routed = route_under_caps(h_db, h_ap, out, flexible)
             # CapEx cost
             capex = (r * rail_inc * rail_cost +
                      d * port_inc_db * port_cost_db +
