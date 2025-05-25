@@ -70,7 +70,7 @@ def gen_actions():
     return actions
 actions = gen_actions()
 
-# --- Simulation function with hypothetical routing per action ---
+# --- Simulation function with partial-volume routing per action ---
 def simulate(flexible):
     # Initialize capacities
     seg_cap = base_seg_cap.copy()
@@ -82,10 +82,11 @@ def simulate(flexible):
     out = [m['out0'] for m in mine_data]
 
     # helper: partial routing under caps
-    def route_under_caps(c_db, c_ap):
+    def route_under_caps(c_db, c_ap, local_out):
         routed = []
         used = {'DBCT': 0.0, 'APPT': 0.0}
-        for o, m in zip(out, mine_data):
+        for o, m in zip(local_out, mine_data):
+            # cost-based preference
             cost_db = m['dist'] * haul_rate + handle_rate_db
             cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
             if cost_db < cost_ap:
@@ -93,15 +94,15 @@ def simulate(flexible):
             elif cost_ap < cost_db:
                 prim, sec = 'APPT', 'DBCT'
             else:
-                prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
+                prim = m['port_fixed']; sec = 'APPT' if prim == 'DBCT' else 'DBCT'
             # allocate to primary
-            avail_p = (c_db if prim=='DBCT' else c_ap) - used[prim]
+            avail_p = (c_db if prim == 'DBCT' else c_ap) - used[prim]
             v1 = max(0.0, min(o, avail_p))
             routed.append((v1, prim)); used[prim] += v1
             # leftover to secondary
             v2 = o - v1
-            if v2>0:
-                avail_s = (c_ap if sec=='APPT' else c_db) - used[sec]
+            if v2 > 0:
+                avail_s = (c_ap if sec == 'APPT' else c_db) - used[sec]
                 v2a = max(0.0, min(v2, avail_s))
                 routed.append((v2a, sec)); used[sec] += v2a
         return routed
@@ -111,47 +112,16 @@ def simulate(flexible):
         if year > 0:
             out = [o * (1 + m['growth']) for o, m in zip(out, mine_data)]
 
-        # Compute current routing under existing capacities        def route_under_caps(c_db, c_ap):
-            # Partial allocation: fill cheaper port first up to capacity, then overflow to other
-            routed = []  # list of (volume, port)
-            # track used capacity
-            used = {'DBCT': 0.0, 'APPT': 0.0}
-            for o, m in zip(out, mine_data):
-                # determine cost order
-                cost_db = m['dist'] * haul_rate + handle_rate_db
-                cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
-                if cost_db < cost_ap:
-                    prim, sec = 'DBCT', 'APPT'
-                elif cost_ap < cost_db:
-                    prim, sec = 'APPT', 'DBCT'
-                else:
-                    prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
-                # allocate to primary
-                avail_prim = (c_db if prim=='DBCT' else c_ap) - used[prim]
-                vol_prim = max(0.0, min(o, avail_prim))
-                routed.append((vol_prim, prim))
-                used[prim] += vol_prim
-                # leftover to secondary
-                vol_sec = o - vol_prim
-                if vol_sec > 0:
-                    avail_sec = (c_ap if sec=='APPT' else c_db) - used[sec]
-                    # any overflow beyond both caps is dropped (shouldn't happen)
-                    vol_sec_alloc = max(0.0, min(vol_sec, avail_sec))
-                    routed.append((vol_sec_alloc, sec))
-                    used[sec] += vol_sec_alloc
-            return routed
-
         # Decide on best build action by minimizing immediate NPV with re-routing under each hypothetical
         best_val = float('inf')
         best_act = (0, 0, 0)
         best_routed = None
         for r, d, a in actions:
             # Hypothetical capacities
-            h_seg = [c + r * rail_inc for c in seg_cap]
             h_db = db_cap + d * port_inc_db
             h_ap = ap_cap + a * port_inc_ap
             # Re-route under hypothetical port caps
-            routed = route_under_caps(h_db, h_ap)
+            routed = route_under_caps(h_db, h_ap, out)
             # CapEx cost
             capex = (r * rail_inc * rail_cost +
                      d * port_inc_db * port_cost_db +
@@ -190,7 +160,16 @@ def simulate(flexible):
     return df
 
 # --- Run both scenarios ---
-# --- Run both scenarios ---
+df_fixed = simulate(False)
+df_flex = simulate(True)
+
+# --- Summary table ---
+df_sum = pd.DataFrame([{
+    'NPV Fixed': df_fixed['NPVYear'].sum(),
+    'NPV Flexible': df_flex['NPVYear'].sum(),
+    'Saving': df_fixed['NPVYear'].sum() - df_flex['NPVYear'].sum()
+}])
+# --- Outputs ---
 df_fixed = simulate(False)
 df_flex = simulate(True)
 
