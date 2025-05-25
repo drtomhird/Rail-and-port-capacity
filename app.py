@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import altair as alt
 
 # --- Data classes ---
 class Mine:
@@ -44,12 +45,10 @@ def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discou
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
             vol = outputs[m.name]
-            # choose nearest port
             dists = {p.name: (m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt) for p in ports}
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # expand capacity
         port_cost = 0.0
         for p in ports:
             if usage[p.name] > p.capacity:
@@ -68,55 +67,45 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
     """Allocate system-wide plumps then reroute to ports with excess capacity"""
     results = {'port_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
-        # compute outputs and initial nearest-port assignments
         outputs = compute_yearly_outputs(mines, year)
         assignments = {p.name: {} for p in ports}
         usage = {p.name: 0.0 for p in ports}
+        # initial nearest-port assignment
         for m in mines:
             vol = outputs[m.name]
             dists = {p.name: (m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt) for p in ports}
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # determine plumps needed system-wide
+        # system-wide plump calculation
         capacities = {p.name: p.capacity for p in ports}
         total_excess = sum(max(0, usage[n] - capacities[n]) for n in capacities)
         total_plumps = int(np.ceil(total_excess / plump))
-        # allocate plumps sequentially
         allocated = {p.name: 0 for p in ports}
         for _ in range(total_plumps):
             rem = {n: usage[n] - (capacities[n] + allocated[n] * plump) for n in capacities}
             elig = [n for n, d in rem.items() if d >= plump]
             choice = max(elig, key=lambda n: rem[n]) if elig else max(rem, key=rem.get)
             allocated[choice] += 1
-        # apply expansions
         port_cost = 0.0
         for p in ports:
             chunks = allocated[p.name]
             p.capacity += chunks * plump
             port_cost += chunks * expansion_cost
-        # reroute: from over-capacity to ports with excess capacity
+        # reroute from over-capacity to ports with excess capacity
         usage = {p.name: sum(assignments[p.name].values()) for p in ports}
         for p in ports:
             if usage[p.name] > p.capacity:
-                # find target ports with usage < capacity
                 excess_ports = [o for o in ports if usage[o.name] < o.capacity]
                 if not excess_ports:
                     continue
-                # build candidate list
                 items = []
                 for mine_name, vol in assignments[p.name].items():
                     m = next(m for m in mines if m.name == mine_name)
-                    # compute cost to each excess port
-                    costs = {}
-                    for o in excess_ports:
-                        dist = m.distance_to_dbct if o.name == 'DBCT' else m.distance_to_appt
-                        costs[o.name] = dist * haulage_rate
+                    costs = {o.name: ((m.distance_to_dbct if o.name=='DBCT' else m.distance_to_appt) * haulage_rate) for o in excess_ports}
                     target = min(costs, key=costs.get)
                     items.append((mine_name, vol, costs[target], target))
-                # sort by cheapest reroute cost
                 items.sort(key=lambda x: x[2])
-                # move just enough volume
                 for mine_name, vol, _, target in items:
                     if usage[p.name] <= p.capacity:
                         break
@@ -127,7 +116,6 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
                     assignments[target][mine_name] = assignments[target].get(mine_name, 0) + move_vol
                     usage[p.name] -= move_vol
                     usage[target] += move_vol
-        # compute costs
         haulage_cost = compute_haulage_costs(assignments, haulage_rate, mines)
         results['port_cost'][year] = port_cost
         results['haulage_cost'][year] = haulage_cost
@@ -168,8 +156,26 @@ if st.sidebar.button("Run simulation"):
     flex = flexible_model(mines, ports, YEARS, PLUMP, EXPANSION_COST, HAULAGE_RATE, DISCOUNT_RATE)
     df_fixed = pd.DataFrame(fixed)
     df_flex = pd.DataFrame(flex)
-    st.line_chart(df_fixed['port_cost'].cumsum() - df_flex['port_cost'].cumsum(), height=300)
-    st.line_chart(df_fixed['haulage_cost'].cumsum() - df_flex['haulage_cost'].cumsum(), height=300)
+
+    # Chart 1: Cumulative Port-Expansion Cost Difference as Bar Chart
+    port_diff = df_fixed['port_cost'].cumsum() - df_flex['port_cost'].cumsum()
+    port_df = pd.DataFrame({'Year': port_diff.index, 'Cost Difference': port_diff.values})
+    chart1 = alt.Chart(port_df).mark_bar().encode(
+        x=alt.X('Year:O', title='Year'),
+        y=alt.Y('Cost Difference:Q', title='Cumulative Port-Expansion Cost Difference ($)')
+    ).properties(width=700, height=300, title='Cumulative Port-Expansion Cost Difference')
+    st.altair_chart(chart1, use_container_width=True)
+
+    # Chart 2: Cumulative Haulage Cost Difference as Line Chart
+    haul_diff = df_fixed['haulage_cost'].cumsum() - df_flex['haulage_cost'].cumsum()
+    haul_df = pd.DataFrame({'Year': haul_diff.index, 'Cost Difference': haul_diff.values})
+    chart2 = alt.Chart(haul_df).mark_line(point=True).encode(
+        x=alt.X('Year:Q', title='Year'),
+        y=alt.Y('Cost Difference:Q', title='Cumulative Haulage Cost Difference ($)')
+    ).properties(width=700, height=300, title='Cumulative Haulage Cost Difference')
+    st.altair_chart(chart2, use_container_width=True)
+
+    # NPV summary and download
     npv_diff = compute_npv(fixed['total_cost'], DISCOUNT_RATE) - compute_npv(flex['total_cost'], DISCOUNT_RATE)
     st.write(f"NPV difference (Fixed - Flexible): {npv_diff:.2f}")
     combined = pd.concat([df_fixed.add_prefix('fixed_'), df_flex.add_prefix('flex_')], axis=1)
