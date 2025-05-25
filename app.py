@@ -7,7 +7,7 @@ class Mine:
     def __init__(self, name, distance_to_dbct, output0, growth_rate):
         self.name = name
         self.distance_to_dbct = distance_to_dbct
-        self.distance_to_appt = None  # set after rail length
+        self.distance_to_appt = None  # set after rail length input
         self.output0 = output0
         self.growth_rate = growth_rate
 
@@ -20,12 +20,12 @@ class Port:
 
 # --- Core model functions ---
 def compute_yearly_outputs(mines, year):
-    """Returns dict of mine outputs for a given year"""
+    """Returns output volume per mine for a given year"""
     return {m.name: m.output0 * ((1 + m.growth_rate) ** year) for m in mines}
 
 
 def compute_haulage_costs(assignments, haulage_rate, mines):
-    """Compute total haulage cost given assignments: {port: {mine: volume}}"""
+    """Compute total haulage cost: assignments is {port_name: {mine_name: volume}}"""
     total = 0.0
     for port_name, mine_vols in assignments.items():
         for mine_name, vol in mine_vols.items():
@@ -36,9 +36,11 @@ def compute_haulage_costs(assignments, haulage_rate, mines):
 
 
 def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
+    """Always expand each port individually when local demand > capacity"""
     results = {'port_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
         outputs = compute_yearly_outputs(mines, year)
+        # assign each mine to its closest port
         assignments = {'DBCT': {}, 'APPT': {}}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
@@ -46,6 +48,7 @@ def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discou
             port = 'DBCT' if m.distance_to_dbct <= m.distance_to_appt else 'APPT'
             assignments[port][m.name] = vol
             usage[port] += vol
+        # expand ports independently
         port_cost = 0.0
         for p in ports:
             if usage[p.name] > p.capacity:
@@ -54,19 +57,18 @@ def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discou
                 p.capacity += chunks * plump
                 port_cost += chunks * expansion_cost
         haulage_cost = compute_haulage_costs(assignments, haulage_rate, mines)
-        total_cost = port_cost + haulage_cost
+        total = port_cost + haulage_cost
         results['port_cost'][year] = port_cost
         results['haulage_cost'][year] = haulage_cost
-        results['total_cost'][year] = total_cost
+        results['total_cost'][year] = total
     return results
 
 
 def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
-    """Central planner allocates expansion plumps sequentially to minimize unmet demand"""
+    """Allocate a system-wide number of plumps each year to minimize unmet demand across both ports"""
     results = {'port_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
         outputs = compute_yearly_outputs(mines, year)
-        # assign volumes to closest port
         assignments = {'DBCT': {}, 'APPT': {}}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
@@ -74,42 +76,39 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
             port = 'DBCT' if m.distance_to_dbct <= m.distance_to_appt else 'APPT'
             assignments[port][m.name] = vol
             usage[port] += vol
-        # determine expansions by plumps per port
-        port_cost = 0.0
-        # capture starting capacities
+        # determine system-wide plumps needed
         capacities = {p.name: p.capacity for p in ports}
-        # compute plumps needed per port
-        plumps_needed = {p.name: int(np.ceil(max(0, usage[p.name] - capacities[p.name]) / plump)) for p in ports}
-        total_plumps = sum(plumps_needed.values())
+        total_excess = sum(max(0, usage[name] - capacities[name]) for name in capacities)
+        total_plumps = int(np.ceil(total_excess / plump))
+        # sequentially allocate plumps to ports
         allocated = {p.name: 0 for p in ports}
-        # allocate each plump sequentially
         for _ in range(total_plumps):
-            # compute remaining unmet demand
+            # compute remaining unmet demand per port after allocated plumps
             rem = {name: usage[name] - (capacities[name] + allocated[name] * plump) for name in capacities}
-            # find ports with rem demand >= plump
+            # if any port still has unmet >= plump, allocate there (choose highest unmet)
             elig = [name for name, d in rem.items() if d >= plump]
             if elig:
-                # allocate to port with highest remaining demand
-                choice = max(elig, key=lambda name: rem[name])
+                choice = max(elig, key=lambda n: rem[n])
             else:
-                # last plump: allocate to highest rem demand
+                # final plump goes to port with highest remaining demand
                 choice = max(rem, key=rem.get)
             allocated[choice] += 1
-        # apply expansions
+        # apply expansions and cost
+        port_cost = 0.0
         for p in ports:
             chunks = allocated[p.name]
             p.capacity += chunks * plump
             port_cost += chunks * expansion_cost
         haulage_cost = compute_haulage_costs(assignments, haulage_rate, mines)
-        total_cost = port_cost + haulage_cost
+        total = port_cost + haulage_cost
         results['port_cost'][year] = port_cost
         results['haulage_cost'][year] = haulage_cost
-        results['total_cost'][year] = total_cost
+        results['total_cost'][year] = total
     return results
 
 
 def compute_npv(cash_flows, discount_rate):
-    return sum(cf / ((1 + discount_rate) ** year) for year, cf in cash_flows.items())
+    return sum(cf / ((1 + discount_rate) ** yr) for yr, cf in cash_flows.items())
 
 # --- Streamlit UI ---
 st.title("Rail-Port Capacity Simulation")
@@ -123,9 +122,9 @@ with st.sidebar:
 
     base_df = pd.DataFrame({
         "Name": [f"Mine {i+1}" for i in range(10)],
-        "Distance to DBCT": [55 + 10*i for i in range(10)],
-        "Output0": [100]*10,
-        "Growth rate": [0.10]*10
+        "Distance to DBCT": [55 + 10 * i for i in range(10)],
+        "Output0": [100] * 10,
+        "Growth rate": [0.10] * 10
     })
     try:
         mines_df = st.data_editor(base_df, use_container_width=True)
@@ -139,7 +138,7 @@ if st.sidebar.button("Run simulation"):
     ports = [Port("DBCT", 500, PLUMP, EXPANSION_COST), Port("APPT", 500, PLUMP, EXPANSION_COST)]
 
     fixed = fixed_model(mines, ports, YEARS, PLUMP, EXPANSION_COST, HAULAGE_RATE, DISCOUNT_RATE)
-    # reset capacities for flexible run
+    # reset for flexible run
     ports = [Port("DBCT", 500, PLUMP, EXPANSION_COST), Port("APPT", 500, PLUMP, EXPANSION_COST)]
     flex = flexible_model(mines, ports, YEARS, PLUMP, EXPANSION_COST, HAULAGE_RATE, DISCOUNT_RATE)
 
