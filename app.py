@@ -49,6 +49,7 @@ def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discou
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
+        # expand capacity
         port_cost = 0.0
         for p in ports:
             if usage[p.name] > p.capacity:
@@ -64,22 +65,22 @@ def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discou
 
 
 def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
-    """Allocate plumps system-wide and reroute to ports with excess capacity"""
+    """Allocate system-wide plumps then reroute to ports with excess capacity"""
     results = {'port_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
+        # compute outputs and initial nearest-port assignments
         outputs = compute_yearly_outputs(mines, year)
         assignments = {p.name: {} for p in ports}
         usage = {p.name: 0.0 for p in ports}
-        # initial assignment to nearest port
         for m in mines:
             vol = outputs[m.name]
             dists = {p.name: (m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt) for p in ports}
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # calculate total plumps needed
+        # determine plumps needed system-wide
         capacities = {p.name: p.capacity for p in ports}
-        total_excess = sum(max(0, usage[name] - capacities[name]) for name in capacities)
+        total_excess = sum(max(0, usage[n] - capacities[n]) for n in capacities)
         total_plumps = int(np.ceil(total_excess / plump))
         # allocate plumps sequentially
         allocated = {p.name: 0 for p in ports}
@@ -88,33 +89,34 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
             elig = [n for n, d in rem.items() if d >= plump]
             choice = max(elig, key=lambda n: rem[n]) if elig else max(rem, key=rem.get)
             allocated[choice] += 1
-        # expand capacities and assess rerouting
+        # apply expansions
         port_cost = 0.0
         for p in ports:
             chunks = allocated[p.name]
             p.capacity += chunks * plump
             port_cost += chunks * expansion_cost
-        # reroute from over-capacity ports to those with excess capacity
+        # reroute: from over-capacity to ports with excess capacity
         usage = {p.name: sum(assignments[p.name].values()) for p in ports}
         for p in ports:
             if usage[p.name] > p.capacity:
-                # identify ports that have excess (usage < capacity)
+                # find target ports with usage < capacity
                 excess_ports = [o for o in ports if usage[o.name] < o.capacity]
                 if not excess_ports:
                     continue
-                # prepare list of candidate shipments with cost to reroute
+                # build candidate list
                 items = []
                 for mine_name, vol in assignments[p.name].items():
                     m = next(m for m in mines if m.name == mine_name)
-                    # find cheapest target port for reroute
+                    # compute cost to each excess port
                     costs = {}
                     for o in excess_ports:
                         dist = m.distance_to_dbct if o.name == 'DBCT' else m.distance_to_appt
                         costs[o.name] = dist * haulage_rate
                     target = min(costs, key=costs.get)
                     items.append((mine_name, vol, costs[target], target))
-                # reroute cheapest shipments first
+                # sort by cheapest reroute cost
                 items.sort(key=lambda x: x[2])
+                # move just enough volume
                 for mine_name, vol, _, target in items:
                     if usage[p.name] <= p.capacity:
                         break
@@ -125,7 +127,7 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
                     assignments[target][mine_name] = assignments[target].get(mine_name, 0) + move_vol
                     usage[p.name] -= move_vol
                     usage[target] += move_vol
-        # compute haulage cost after rerouting
+        # compute costs
         haulage_cost = compute_haulage_costs(assignments, haulage_rate, mines)
         results['port_cost'][year] = port_cost
         results['haulage_cost'][year] = haulage_cost
