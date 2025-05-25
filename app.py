@@ -106,7 +106,7 @@ def simulate(flexible):
                 routed.append((v2a, sec)); used[sec] += v2a
         return routed
 
-    for year in range(years + 1):(years + 1):
+    for year in range(years + 1):
         # Grow outputs
         if year > 0:
             out = [o * (1 + m['growth']) for o, m in zip(out, mine_data)]
