@@ -1,128 +1,120 @@
-import numpy as np
 import streamlit as st
+import numpy as np
+import pandas as pd
 
-@st.cache_data
-def compute_fixed_expansions(
-    distances, outputs, growth_rates,
-    initial_capacities, plump_size, plump_cost,
-    years
-):
-    """
-    Fixed model: expands each port by ceil(deficit/plump_size) each year.
-    """
-    cap_dbct, cap_appt = initial_capacities
-    expansions, capacities, demands = [], [], []
-    use_dbct = distances[:,0] <= distances[:,1]
+# 1. Data classes
+template = """
+class Mine:
+    def __init__(self, name, distance_to_dbct, output0, growth_rate):
+        self.name = name
+        self.distance_to_dbct = distance_to_dbct
+        self.distance_to_appt = RAIL_LENGTH - distance_to_dbct
+        self.output0 = output0
+        self.growth_rate = growth_rate
 
-    for t in range(1, years+1):
-        outputs_t = outputs * ((1 + growth_rates) ** t)
-        demand_dbct = outputs_t[use_dbct].sum()
-        demand_appt = outputs_t[~use_dbct].sum()
+class Port:
+    def __init__(self, name, initial_capacity, plump, expansion_cost):
+        self.name = name
+        self.capacity = initial_capacity
+        self.plump = plump
+        self.expansion_cost = expansion_cost
+"""
 
-        plumps_dbct = int(np.ceil(max(0, demand_dbct - cap_dbct) / plump_size))
-        plumps_appt = int(np.ceil(max(0, demand_appt - cap_appt) / plump_size))
+# 2. Core model functions
+"""
+def compute_yearly_outputs(mines, years):
+    # returns DataFrame with mine outputs for each year
+    pass
 
-        cap_dbct += plumps_dbct * plump_size
-        cap_appt += plumps_appt * plump_size
+def compute_haulage_costs(assignments, haulage_rate):
+    # sum over mines → port assignments
+    pass
 
-        expansions.append((plumps_dbct, plumps_appt))
-        capacities.append((cap_dbct, cap_appt))
-        demands.append((demand_dbct, demand_appt))
+def fixed_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
+    # always ship to closest port, expand capacity when demand > capacity
+    # returns dict with yearly port expansions and haulage costs
+    pass
 
-    return {
-        'expansions': expansions,
-        'capacity': capacities,
-        'demand': demands
+def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, discount_rate):
+    # central planner: may reroute to delay expansions
+    pass
+
+def compute_npv(cash_flows, discount_rate):
+    # standard discounting
+    return sum(cf / ((1 + discount_rate) ** year) for year, cf in cash_flows.items())
+"""
+
+# 3. Streamlit user interface
+st.title("Rail-Port Capacity Simulation")
+
+# Sidebar inputs
+with st.sidebar:
+    RAIL_LENGTH = st.number_input("Length of railway (km)", value=200)
+    YEARS = st.number_input("Simulation horizon (years)", value=20, step=1)
+    DISCOUNT_RATE = st.number_input("Discount rate", value=0.10)
+    HAULAGE_RATE = st.number_input("Haulage cost per unit per km", value=0.1)
+    PLUMP = st.number_input("Discrete capacity chunk (plump)", value=125)
+    EXPANSION_COST = st.number_input("Cost per plump", value=1250)
+
+    # Input table for mines
+    mines_df = st.experimental_data_editor(
+        pd.DataFrame({
+            "Name": [f"Mine {i+1}" for i in range(10)],
+            "Distance to DBCT": [55 + 10*i for i in range(10)],
+            "Output0": [100]*10,
+            "Growth rate": [0.10]*10
+        }), use_container_width=True
+    )
+
+if st.sidebar.button("Run simulation"):
+    # Instantiate objects
+    mines = [Mine(r.Name, r["Distance to DBCT"], r.Output0, r["Growth rate"]) for _, r in mines_df.iterrows()]
+    ports = [Port("DBCT", initial_capacity=500, plump=PLUMP, expansion_cost=EXPANSION_COST),
+             Port("APPT", initial_capacity=500, plump=PLUMP, expansion_cost=EXPANSION_COST)]
+
+    # Run models
+    fixed_results = fixed_model(mines, ports, YEARS, PLUMP, EXPANSION_COST, HAULAGE_RATE, DISCOUNT_RATE)
+    flexible_results = flexible_model(mines, ports, YEARS, PLUMP, EXPANSION_COST, HAULAGE_RATE, DISCOUNT_RATE)
+
+    # Combine results into DataFrame for charting
+    df_fixed = pd.DataFrame(fixed_results)
+    df_flex = pd.DataFrame(flexible_results)
+
+    # 4. Plots
+    st.line_chart(
+        df_fixed["cum_port_cost"] - df_flex["cum_port_cost"],
+        height=300,
+        use_container_width=True
+    )
+    st.bar_chart(
+        pd.DataFrame({
+            "Port NPV diff": [compute_npv(df_fixed.port_cost.to_dict(), DISCOUNT_RATE) - compute_npv(df_flex.port_cost.to_dict(), DISCOUNT_RATE)],
+            "Haulage NPV diff": [compute_npv(df_fixed.haulage_cost.to_dict(), DISCOUNT_RATE) - compute_npv(df_flex.haulage_cost.to_dict(), DISCOUNT_RATE)]
+        })
+    )
+
+    # 5. Rerouted volumes bar chart
+    st.bar_chart(df_flex.reassigned_volume)
+
+    # 6. Key outcomes table
+    outcomes = {
+        "NPV fixed - flexible total": compute_npv(df_fixed.total_cost.to_dict(), DISCOUNT_RATE) - compute_npv(df_flex.total_cost.to_dict(), DISCOUNT_RATE),
+        "% of flex port capacity cost": (
+            compute_npv(df_fixed.total_cost.to_dict(), DISCOUNT_RATE) - compute_npv(df_flex.total_cost.to_dict(), DISCOUNT_RATE)
+        ) / compute_npv(df_flex.port_cost.to_dict(), DISCOUNT_RATE)
     }
+    st.table(pd.DataFrame.from_dict(outcomes, orient="index", columns=["Value"]))
 
-@st.cache_data
-def compute_flexible_expansions(
-    distances, outputs, growth_rates,
-    initial_capacities, plump_size, plump_cost,
-    haul_cost_per_unit_km,
-    discount_rate,
-    years
-):
-    """
-    Flexible model: each year:
-      1. Compute total_plumps = ceil((total_demand - total_capacity)/plump_size)
-      2. Allocate first total_plumps-1 to meet each port's deficits
-      3. Allocate final plump to port with larger remaining deficit
-      4. Record diversion and haul costs for any deferred capacity
-    """
-    cap_dbct, cap_appt = initial_capacities
-    expansions, capacities, demands = [], [], []
-    diversions, hauling_costs = [], []
-    use_dbct = distances[:,0] <= distances[:,1]
-    extra_db = distances[:,1] - distances[:,0]
-    extra_ap = distances[:,0] - distances[:,1]
+    # 7. Download CSV
+    csv = pd.concat([df_fixed.add_prefix("fixed_"), df_flex.add_prefix("flex_")], axis=1).to_csv(index=False)
+    st.download_button("Download full results CSV", data=csv, file_name="simulation_results.csv")
 
-    # Precompute per-plump haul costs
-    cost_db_plump = plump_size * haul_cost_per_unit_km * (np.min(extra_db[use_dbct]) if np.any(use_dbct) else 0)
-    cost_ap_plump = plump_size * haul_cost_per_unit_km * (np.min(extra_ap[~use_dbct]) if np.any(~use_dbct) else 0)
+# 4. Requirements file
+requirements = """
+streamlit
+numpy
+pandas
+"""
 
-    for t in range(1, years+1):
-        outputs_t = outputs * ((1 + growth_rates) ** t)
-        demand_dbct = outputs_t[use_dbct].sum()
-        demand_appt = outputs_t[~use_dbct].sum()
-        total_demand = demand_dbct + demand_appt
-        total_capacity = cap_dbct + cap_appt
-
-        shortage = max(0, total_demand - total_capacity)
-        total_plumps = int(np.ceil(shortage / plump_size))
-
-        if total_plumps == 0:
-            expansions.append((0,0))
-            capacities.append((cap_dbct, cap_appt))
-            demands.append((demand_dbct, demand_appt))
-            diversions.append(0)
-            hauling_costs.append(0)
-            continue
-
-        fixed_db = int(np.ceil(max(0, demand_dbct - cap_dbct) / plump_size))
-        fixed_ap = int(np.ceil(max(0, demand_appt - cap_appt) / plump_size))
-
-        # Step 2: allocate first total_plumps-1
-        alloc_db = min(fixed_db, total_plumps-1)
-        alloc_ap = min(fixed_ap, total_plumps-1-alloc_db)
-        rem = (total_plumps-1) - (alloc_db + alloc_ap)
-        if rem > 0:
-            db_rem = fixed_db - alloc_db
-            ap_rem = fixed_ap - alloc_ap
-            if db_rem >= ap_rem:
-                add = min(rem, db_rem)
-                alloc_db += add
-                rem -= add
-            if rem > 0:
-                alloc_ap += rem
-
-        # Step 3: final plump to larger remaining deficit
-        rem_def_db = max(0, demand_dbct - (cap_dbct + alloc_db*plump_size))
-        rem_def_ap = max(0, demand_appt - (cap_appt + alloc_ap*plump_size))
-        if rem_def_db >= rem_def_ap:
-            alloc_db += 1
-        else:
-            alloc_ap += 1
-
-        # Step 4: record diversions
-        diverted_db = max(0, fixed_db-alloc_db)*plump_size
-        diverted_ap = max(0, fixed_ap-alloc_ap)*plump_size
-        diversion = diverted_db + diverted_ap
-        haul_cost = (diverted_db/plump_size)*cost_db_plump + (diverted_ap/plump_size)*cost_ap_plump
-
-        cap_dbct += alloc_db * plump_size
-        cap_appt += alloc_ap * plump_size
-
-        expansions.append((alloc_db, alloc_ap))
-        capacities.append((cap_dbct, cap_appt))
-        demands.append((demand_dbct, demand_appt))
-        diversions.append(diversion)
-        hauling_costs.append(haul_cost)
-
-    return {
-        'expansions': expansions,
-        'capacity': capacities,
-        'demand': demands,
-        'diversions': diversions,
-        'hauling_costs': hauling_costs
-    }
+st.sidebar.markdown("**requirements.txt**")
+st.sidebar.code(requirements)
