@@ -21,12 +21,9 @@ class Port:
 
 # --- Core model functions ---
 def compute_yearly_outputs(mines, year):
-    """Returns output volume per mine for a given year"""
     return {m.name: m.output0 * ((1 + m.growth_rate) ** year) for m in mines}
 
-
 def compute_haulage_costs(assignments, haulage_rate, mines):
-    """Compute total haulage cost: assignments is {port_name: {mine_name: volume}}"""
     total = 0.0
     for port_name, mine_vols in assignments.items():
         for mine_name, vol in mine_vols.items():
@@ -68,14 +65,12 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
         outputs = compute_yearly_outputs(mines, year)
         assignments = {p.name: {} for p in ports}
         usage = {p.name: 0.0 for p in ports}
-        # initial nearest-port assignment
         for m in mines:
             vol = outputs[m.name]
             dists = {p.name: (m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt) for p in ports}
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # system-wide plump calculation
         capacities = {p.name: p.capacity for p in ports}
         total_excess = sum(max(0, usage[n] - capacities[n]) for n in capacities)
         total_plumps = int(np.ceil(total_excess / plump))
@@ -90,7 +85,6 @@ def flexible_model(mines, ports, years, plump, expansion_cost, haulage_rate, dis
             chunks = allocated[p.name]
             p.capacity += chunks * plump
             port_cost += chunks * expansion_cost
-        # reroute from over-capacity to ports with excess capacity
         usage = {p.name: sum(assignments[p.name].values()) for p in ports}
         for p in ports:
             if usage[p.name] > p.capacity:
@@ -155,42 +149,47 @@ if st.sidebar.button("Run simulation"):
     df_fixed = pd.DataFrame(fixed)
     df_flex = pd.DataFrame(flex)
 
-    # Chart 1: Cumulative Port-Expansion Cost Difference as Bar Chart
+    # NPV summary moved to top and bold
+    npv_diff = compute_npv(fixed['total_cost'], DISCOUNT_RATE) - compute_npv(flex['total_cost'], DISCOUNT_RATE)
+    st.markdown(f"**NPV difference (Fixed - Flexible) at 20 years = {npv_diff:.2f}**")
+
+    # Chart 1: Cumulative Port-Expansion Cost Difference
+    st.subheader("Cumulative Port-Expansion Cost Difference ($)")
     port_diff = df_fixed['port_cost'].cumsum() - df_flex['port_cost'].cumsum()
     port_df = pd.DataFrame({'Year': port_diff.index, 'Cost Difference': port_diff.values})
     chart1 = alt.Chart(port_df).mark_bar().encode(
         x=alt.X('Year:O', title='Year'),
-        y=alt.Y('Cost Difference:Q', title='Cumulative Port-Expansion Cost Difference ($)')
-    ).properties(width=700, height=300, title='Cumulative Port-Expansion Cost Difference')
+        y=alt.Y('Cost Difference:Q', title='Cumulative Cost Difference ($)')
+    ).properties(width=700, height=300)
     st.altair_chart(chart1, use_container_width=True)
 
-    # Chart 2: Cumulative Haulage Cost Difference as Line Chart
+    # Chart 2: Cumulative Haulage Cost Difference
+    st.subheader("Cumulative Haulage Cost Difference ($)")
     haul_diff = df_fixed['haulage_cost'].cumsum() - df_flex['haulage_cost'].cumsum()
     haul_df = pd.DataFrame({'Year': haul_diff.index, 'Cost Difference': haul_diff.values})
     chart2 = alt.Chart(haul_df).mark_line(point=True).encode(
         x=alt.X('Year:Q', title='Year'),
-        y=alt.Y('Cost Difference:Q', title='Cumulative Haulage Cost Difference ($)')
-    ).properties(width=700, height=300, title='Cumulative Haulage Cost Difference')
+        y=alt.Y('Cost Difference:Q', title='Cumulative Cost Difference ($)')
+    ).properties(width=700, height=300)
     st.altair_chart(chart2, use_container_width=True)
 
-    # Chart 3: Present Value of Cost Differences to each Year
+    # Chart 3: Present Value of Cost Differences Over Time
+    st.subheader("Present Value of Cost Differences Over Time ($)")
     port_diff_year = df_fixed['port_cost'] - df_flex['port_cost']
     haul_diff_year = df_fixed['haulage_cost'] - df_flex['haulage_cost']
-    years_idx = port_diff_year.index.values
+    years_idx = list(port_diff_year.index)
     pv_values = []
     for t in years_idx:
-        pv_port = sum(port_diff_year.iloc[:t+1] / ((1 + DISCOUNT_RATE) ** years_idx[:t+1]))
-        pv_haul = sum(haul_diff_year.iloc[:t+1] / ((1 + DISCOUNT_RATE) ** years_idx[:t+1]))
+        pv_port = sum(port_diff_year.iloc[:t+1] / ((1 + DISCOUNT_RATE) ** np.array(years_idx[:t+1])))
+        pv_haul = sum(haul_diff_year.iloc[:t+1] / ((1 + DISCOUNT_RATE) ** np.array(years_idx[:t+1])))
         pv_values.append(pv_port + pv_haul)
     pv_df = pd.DataFrame({'Year': years_idx, 'PV Cost Difference': pv_values})
     chart3 = alt.Chart(pv_df).mark_line(point=True).encode(
         x=alt.X('Year:Q', title='Year'),
-        y=alt.Y('PV Cost Difference:Q', title='Present Value of Cost Difference ($)')
-    ).properties(width=700, height=300, title='PV of Fixed vs Flexible Cost Differences Over Time')
+        y=alt.Y('PV Cost Difference:Q', title='Present Value ($)')
+    ).properties(width=700, height=300)
     st.altair_chart(chart3, use_container_width=True)
 
-    # NPV summary and download
-    npv_diff = compute_npv(fixed['total_cost'], DISCOUNT_RATE) - compute_npv(flex['total_cost'], DISCOUNT_RATE)
-    st.write(f"NPV difference (Fixed - Flexible): {npv_diff:.2f}")
+    # Download results
     combined = pd.concat([df_fixed.add_prefix('fixed_'), df_flex.add_prefix('flex_')], axis=1)
     st.download_button("Download results CSV", combined.to_csv(index=False), file_name='results.csv')
