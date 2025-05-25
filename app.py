@@ -86,7 +86,6 @@ def simulate(flexible):
         routed = []
         used = {'DBCT': 0.0, 'APPT': 0.0}
         for o, m in zip(local_out, mine_data):
-            # Determine primary/secondary based on routing mode
             if flexible:
                 cost_db = m['dist'] * haul_rate + handle_rate_db
                 cost_ap = (distance_total - m['dist']) * haul_rate + handle_rate_ap
@@ -97,13 +96,10 @@ def simulate(flexible):
                 else:
                     prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
             else:
-                # Fixed: always use original port
                 prim = m['port_fixed']; sec = 'APPT' if prim=='DBCT' else 'DBCT'
-            # allocate to primary
             avail_p = (c_db if prim == 'DBCT' else c_ap) - used[prim]
             v1 = max(0.0, min(o, avail_p))
             routed.append((v1, prim)); used[prim] += v1
-            # leftover to secondary
             v2 = o - v1
             if v2 > 0:
                 avail_s = (c_ap if sec == 'APPT' else c_db) - used[sec]
@@ -112,56 +108,64 @@ def simulate(flexible):
         return routed
 
     for year in range(years + 1):
-        # Grow outputs
         if year > 0:
             out = [o * (1 + m['growth']) for o, m in zip(out, mine_data)]
 
-        # Decide on best build action by minimizing immediate NPV with re-routing under each hypothetical
-        best_val = float('inf')
-        best_act = (0, 0, 0)
-        best_routed = None
-        for r, d, a in actions:
-            # Hypothetical capacities
-            h_db = db_cap + d * port_inc_db
-            h_ap = ap_cap + a * port_inc_ap
-            # Re-route under hypothetical port caps
-            routed = route_under_caps(h_db, h_ap, out, flexible)
-            # CapEx cost
-            capex = (r * rail_inc * rail_cost +
-                     d * port_inc_db * port_cost_db +
-                     a * port_inc_ap * port_cost_ap) / ((1 + discount_rate) ** year)
-            # OpEx under hypothetical routing
-            haul = sum(q * (m['dist'] if p == 'DBCT' else distance_total - m['dist']) * haul_rate
-                       for (q, p), m in zip(routed, mine_data))
-            handle = sum(q * (handle_rate_db if p == 'DBCT' else handle_rate_ap)
-                         for (q, p) in routed) / ((1 + discount_rate) ** (year + 0.5))
-            total = capex + haul + handle
-            if total < best_val:
-                best_val = total
-                best_act = (r, d, a)
-                best_routed = routed
-        # Apply best action
-        r, d, a = best_act
-        seg_cap = [c + r * rail_inc for c in seg_cap]
-        db_cap += d * port_inc_db
-        ap_cap += a * port_inc_ap
-        # Record results
-        haul = sum(q * (m['dist'] if p == 'DBCT' else distance_total - m['dist']) * haul_rate
-                   for (q, p), m in zip(best_routed, mine_data))
-        handle = sum(q * (handle_rate_db if p == 'DBCT' else handle_rate_ap)
-                     for (q, p) in best_routed) / ((1 + discount_rate) ** (year + 0.5))
-        records.append({
-            'Year': year,
-            'RailInv': r * rail_inc * rail_cost,
-            'PortInvDBCT': d * port_inc_db * port_cost_db,
-            'PortInvAPPT': a * port_inc_ap * port_cost_ap,
-            'OpHaul': haul,
-            'OpHandle': handle,
-            'NPVYear': best_val
-        })
-    df = pd.DataFrame(records)
-    df['CumulativeNPV'] = df['NPVYear'].cumsum()
-    return df
+        if not flexible:
+            # Fixed rule: build whenever flow exceeds capacity
+            routed = [(o, m['port_fixed']) for o, m in zip(out, mine_data)]
+            rail_inv = 0
+            # rail: if any segment flow > cap, build
+            seg_flow = [sum(o for o, m in zip(out, mine_data) if m['dist'] >= b) for (_, b) in segments]
+            if any(f > c for f, c in zip(seg_flow, seg_cap)):
+                rail_inv = rail_inc * rail_cost
+                seg_cap = [c + rail_inc for c in seg_cap]
+            # ports
+            db_flow = sum(o for o, p in routed if p == 'DBCT')
+            ap_flow = sum(o for o, p in routed if p == 'APPT')
+            db_inv = 0
+            ap_inv = 0
+            if db_flow > db_cap:
+                db_inv = port_inc_db * port_cost_db; db_cap += port_inc_db
+            if ap_flow > ap_cap:
+                ap_inv = port_inc_ap * port_cost_ap; ap_cap += port_inc_ap
+            # costs
+            haul = sum(o * (m['dist'] if p == 'DBCT' else distance_total - m['dist']) * haul_rate for (o, p), m in zip(routed, mine_data))
+            handle = sum(o * (handle_rate_db if p == 'DBCT' else handle_rate_ap) for o, p in routed)
+            # discount
+            capex = (rail_inv + db_inv + ap_inv) / ((1 + discount_rate) ** year)
+            opex = haul / ((1 + discount_rate) ** (year + 0.5)) + handle / ((1 + discount_rate) ** (year + 0.5))
+            records.append({'Year': year, 'RailInv': rail_inv, 'PortInvDBCT': db_inv, 'PortInvAPPT': ap_inv,
+                            'OpHaul': haul, 'OpHandle': handle, 'NPVYear': capex + opex})
+        else:
+            # Flexible: system-level NPV decision
+            best_val = float('inf'); best_act=(0,0,0); best_routed=None
+            for r,d,a in actions:
+                h_db = db_cap + d * port_inc_db; h_ap = ap_cap + a * port_inc_ap
+                routed = route_under_caps(h_db, h_ap, out, True)
+                capex = (r * rail_inc * rail_cost + d * port_inc_db * port_cost_db + a * port_inc_ap * port_cost_ap) / ((1 + discount_rate) ** year)
+                haul = sum(q * (m['dist'] if p=='DBCT' else distance_total - m['dist']) * haul_rate for (q,p),m in zip(routed, mine_data))
+                handle = sum(q * (handle_rate_db if p=='DBCT' else handle_rate_ap) for (q,p) in routed) / ((1+discount_rate)**(year+0.5))
+                total = capex + haul + handle
+                if total<best_val: best_val=total; best_act=(r,d,a); best_routed=routed
+            r,d,a=best_act
+            # apply
+            seg_cap=[c + r*rail_inc for c in seg_cap]; db_cap+=d*port_inc_db; ap_cap+=a*port_inc_ap
+            # record
+            haul = sum(q * (m['dist'] if p=='DBCT' else distance_total-m['dist']) * haul_rate for (q,p),m in zip(best_routed, mine_data))
+            handle=sum(q*(handle_rate_db if p=='DBCT' else handle_rate_ap) for (q,p) in best_routed)/((1+discount_rate)**(year+0.5))
+            records.append({'Year':year,'RailInv':r*rail_inc*rail_cost,'PortInvDBCT':d*port_inc_db*port_cost_db,
+                             'PortInvAPPT':a*port_inc_ap*port_cost_ap,'OpHaul':haul,'OpHandle':handle,'NPVYear':best_val})
+    df=pd.DataFrame(records); df['CumulativeNPV']=df['NPVYear'].cumsum(); return df
+
+# --- Run both scenarios ---
+df_fixed = simulate(False)
+df_flex = simulate(True)
+
+# --- Summary table ---
+df_sum = pd.DataFrame([{'NPV Fixed':df_fixed['NPVYear'].sum(),'NPV Flexible':df_flex['NPVYear'].sum(),'Saving':df_fixed['NPVYear'].sum()-df_flex['NPVYear'].sum()}])
+
+# --- Outputs ---
 
 # --- Run both scenarios ---
 df_fixed = simulate(False)
