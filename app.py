@@ -34,19 +34,17 @@ def compute_haulage_costs(assignments, haulage_rate, mines):
 
 # Fixed model tracks DBCT, APPT and haulage costs
 def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
-    results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
+    results = { 'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {} }
     for year in range(years + 1):
-        # Assign to nearest port
         outputs = compute_yearly_outputs(mines, year)
         assignments = {'DBCT': {}, 'APPT': {}}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
             vol = outputs[m.name]
-            dists = {p.name: m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt for p in ports}
+            dists = {p.name: m.distance_to_dbct if p.name=='DBCT' else m.distance_to_appt for p in ports}
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # Expand at each port independently
         dbct_cost = appt_cost = 0.0
         for p in ports:
             if usage[p.name] > p.capacity:
@@ -64,76 +62,60 @@ def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rat
         results['total_cost'][year] = total
     return results
 
-# Flexible model with N vs N+1 trade-off and rerouting
+# Flexible model with system-wide expansion and rerouting
 def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
-    results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
+    results = { 'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {} }
     for year in range(years + 1):
         outputs = compute_yearly_outputs(mines, year)
-        # initial nearest-port assignment
-        base_assign = {'DBCT': {}, 'APPT': {}}
+        assignments = {'DBCT': {}, 'APPT': {}}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
             vol = outputs[m.name]
-            dists = {p.name: m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt for p in ports}
+            dists = {p.name: m.distance_to_dbct if p.name=='DBCT' else m.distance_to_appt for p in ports}
             chosen = min(dists, key=dists.get)
-            base_assign[chosen][m.name] = vol
+            assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # compute N
-        caps0 = {p.name: p.capacity for p in ports}
-        total_excess = sum(max(0, usage[n] - caps0[n]) for n in caps0)
-        N = int(np.ceil(total_excess / plump))
-        # helper to simulate with K plumps
-        def simulate(K):
-            caps = caps0.copy()
-            # allocate K plumps across ports same as before
-            allocated = {p.name: 0 for p in ports}
-            # distribute sequentially
-            for i in range(K):
-                rem = {n: usage[n] - (caps[n] + allocated[n]*plump) for n in caps}
-                elig = [n for n,d in rem.items() if d >= plump]
-                choice = max(elig, key=lambda n: rem[n]) if elig else max(rem, key=rem.get)
-                allocated[choice] += 1
-            # apply expansions
-            db_ct = ap_pt = 0.0
-            for p in ports:
-                chunks = allocated[p.name]
-                caps[p.name] += chunks * plump
-                if p.name == 'DBCT': db_ct += chunks * exp_cost
-                else: ap_pt += chunks * exp_cost
-            # reroute from over-capacity
-            assign = {k: dict(v) for k,v in base_assign.items()}
-            use2 = usage.copy()
-            for p in ports:
-                if use2[p.name] > caps[p.name]:
-                    targets = [o for o in ports if use2[o.name] < caps[o.name]]
-                    items = []
-                    for mn,vol in list(assign[p.name].items()):
-                        m = next(x for x in mines if x.name==mn)
-                        costs = {o.name: (m.distance_to_dbct if o.name=='DBCT' else m.distance_to_appt)*haulage_rate for o in targets}
-                        tgt = min(costs, key=costs.get)
-                        items.append((mn,vol,costs[tgt],tgt))
-                    items.sort(key=lambda x:x[2])
-                    for mn,vol,_,tgt in items:
-                        if use2[p.name] <= caps[p.name]: break
-                        mv = min(vol, use2[p.name]-caps[p.name])
-                        assign[p.name][mn] -= mv; use2[p.name] -= mv
-                        assign[tgt][mn] = assign[tgt].get(mn,0)+mv; use2[tgt] += mv
-            haul = compute_haulage_costs(assign, haulage_rate, mines)
-            total = db_ct + ap_pt + haul
-            return db_ct, ap_pt, haul, total
-        # simulate N and N+1
-        db_n, ap_n, ha_n, tot_n = simulate(N)
-        db_n1, ap_n1, ha_n1, tot_n1 = simulate(N+1)
-        # choose better
-        if tot_n1 < tot_n:
-            db_ct, ap_pt, haul, total = db_n1, ap_n1, ha_n1, tot_n1
-        else:
-            db_ct, ap_pt, haul, total = db_n, ap_n, ha_n, tot_n
-        # record
-        results['dbct_cost'][year] = db_ct
-        results['appt_cost'][year] = ap_pt
-        results['haulage_cost'][year] = haul
-        results['total_cost'][year] = total
+        caps = {p.name: p.capacity for p in ports}
+        total_excess = sum(max(0, usage[n] - caps[n]) for n in caps)
+        plumps = int(np.ceil(total_excess / plump))
+        allocated = {p.name: 0 for p in ports}
+        for _ in range(plumps):
+            rem = {n: usage[n] - (caps[n] + allocated[n]*plump) for n in caps}
+            elig = [n for n,d in rem.items() if d>=plump]
+            choice = max(elig, key=lambda n: rem[n]) if elig else max(rem, key=rem.get)
+            allocated[choice] += 1
+        dbct_cost = appt_cost = 0.0
+        for p in ports:
+            chunks = allocated[p.name]
+            p.capacity += chunks * plump
+            cost = chunks * exp_cost
+            if p.name=='DBCT': dbct_cost += cost
+            else: appt_cost += cost
+        usage = {p.name: sum(assignments[p.name].values()) for p in ports}
+        for p in ports:
+            if usage[p.name] > p.capacity:
+                targets = [o for o in ports if usage[o.name] < o.capacity]
+                items = []
+                for mn,vol in assignments[p.name].items():
+                    m = next(x for x in mines if x.name==mn)
+                    costs = {o.name: (m.distance_to_dbct if o.name=='DBCT' else m.distance_to_appt)*haulage_rate for o in targets}
+                    tgt = min(costs, key=costs.get)
+                    items.append((mn,vol,costs[tgt],tgt))
+                items.sort(key=lambda x:x[2])
+                for mn,vol,_,tgt in items:
+                    if usage[p.name] <= p.capacity: break
+                    mv = min(vol, usage[p.name]-p.capacity)
+                    assignments[p.name][mn] -= mv
+                    if assignments[p.name][mn]==0: del assignments[p.name][mn]
+                    assignments[tgt][mn] = assignments[tgt].get(mn,0)+mv
+                    usage[p.name] -= mv
+                    usage[tgt] += mv
+        haulage = compute_haulage_costs(assignments, haulage_rate, mines)
+        total = dbct_cost + appt_cost + haulage
+        results['dbct_cost'][year]=dbct_cost
+        results['appt_cost'][year]=appt_cost
+        results['haulage_cost'][year]=haulage
+        results['total_cost'][year]=total
     return results
 
 # NPV calculator
@@ -162,6 +144,7 @@ with st.sidebar:
         mines_df = st.experimental_data_editor(base_df, use_container_width=True)
 
 if st.sidebar.button("Run simulation"):
+    # Prepare data
     mines = [Mine(r.Name, r["Distance to DBCT"], r.Output0, r["Growth rate"]) for _,r in mines_df.iterrows()]
     for m in mines: m.distance_to_appt = RAIL_LENGTH - m.distance_to_dbct
     ports = [Port("DBCT",500,PLUMP,EXP_COST),Port("APPT",500,PLUMP,EXP_COST)]
@@ -173,28 +156,33 @@ if st.sidebar.button("Run simulation"):
     df_f = pd.DataFrame(fixed)
     df_x = pd.DataFrame(flex)
 
+    # Compute NPVs
     npv_diff = compute_npv(df_f['total_cost'],DISCOUNT_RATE) - compute_npv(df_x['total_cost'],DISCOUNT_RATE)
     pv_appt_fixed = compute_npv(df_f['appt_cost'],DISCOUNT_RATE)
     pv_appt_flex  = compute_npv(df_x['appt_cost'],DISCOUNT_RATE)
     pct = npv_diff / pv_appt_fixed * 100
     npv_appt_diff = pv_appt_fixed - pv_appt_flex
 
+    # Display results
     st.subheader(f"Total NPV difference (Fixed - Flexible) at {YEARS} years = {npv_diff:.2f}")
     st.subheader(f"{npv_diff:.2f} as % of PV of APPT port expansion costs = {pct:.2f}%")
     st.subheader(f"NPV of APPT port expansion costs (Fixed - Flexible) = {npv_appt_diff:.2f}")
 
+    # Chart 1: APPT expansion diff
     st.subheader("Cumulative APPT Port-Expansion Cost Difference ($)")
     port_diff = df_f['appt_cost'].cumsum() - df_x['appt_cost'].cumsum()
     port_df = pd.DataFrame({'Year': port_diff.index, 'Cost Diff': port_diff.values})
     ch1 = alt.Chart(port_df).mark_bar().encode(x='Year:O', y='Cost Diff:Q')
     st.altair_chart(ch1, use_container_width=True)
 
+    # Chart 2: Haulage diff
     st.subheader("Cumulative Haulage Cost Difference ($)")
     haul_diff = df_f['haulage_cost'].cumsum() - df_x['haulage_cost'].cumsum()
     haul_df = pd.DataFrame({'Year': haul_diff.index, 'Cost Diff': haul_diff.values})
     ch2 = alt.Chart(haul_df).mark_line(point=True).encode(x='Year:Q', y='Cost Diff:Q')
     st.altair_chart(ch2, use_container_width=True)
 
+    # Chart 3: PV over time
     st.subheader("Present Value of Cost Differences Over Time ($)")
     perf = []
     for t in range(YEARS+1):
@@ -205,5 +193,6 @@ if st.sidebar.button("Run simulation"):
     ch3 = alt.Chart(pv_df).mark_line(point=True).encode(x='Year:Q', y='PV Diff:Q')
     st.altair_chart(ch3, use_container_width=True)
 
+    # Download
     combined = pd.concat([df_f.add_prefix('fixed_'), df_x.add_prefix('flex_')], axis=1)
     st.download_button("Download CSV", combined.to_csv(index=False), file_name='results.csv')
