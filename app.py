@@ -150,6 +150,12 @@ def compute_npv(series, rate):
 
 # --- Streamlit App ---
 st.title("Rail-Port Capacity Simulation")
+
+# Placeholders to ensure charts persist
+chart1_placeholder = st.empty()
+chart2_placeholder = st.empty()
+chart3_placeholder = st.empty()
+
 with st.sidebar:
     RAIL_LENGTH   = st.number_input("Railway length (km)", value=200)
     YEARS         = st.number_input("Simulation horizon (years)", value=20)
@@ -196,13 +202,13 @@ if st.sidebar.button("Run simulation"):
     port_diff = df_f['appt_cost'].cumsum() - df_x['appt_cost'].cumsum()
     port_df = pd.DataFrame({'Year': port_diff.index, 'Cost Diff': port_diff.values})
     ch1 = alt.Chart(port_df).mark_bar().encode(x='Year:O', y='Cost Diff:Q')
-    st.altair_chart(ch1, use_container_width=True)
+    chart1_placeholder.altair_chart(ch1, use_container_width=True)
 
     st.subheader("Cumulative Haulage Cost Difference ($)")
     haul_diff = df_f['haulage_cost'].cumsum() - df_x['haulage_cost'].cumsum()
     haul_df = pd.DataFrame({'Year': haul_diff.index, 'Cost Diff': haul_diff.values})
     ch2 = alt.Chart(haul_df).mark_line(point=True).encode(x='Year:Q', y='Cost Diff:Q')
-    st.altair_chart(ch2, use_container_width=True)
+    chart2_placeholder.altair_chart(ch2, use_container_width=True)
 
     st.subheader("Present Value of Cost Differences Over Time ($)")
     perf = []
@@ -212,7 +218,7 @@ if st.sidebar.button("Run simulation"):
         perf.append(pv_port + pv_h)
     pv_df = pd.DataFrame({'Year': range(YEARS+1), 'PV Diff': perf})
     ch3 = alt.Chart(pv_df).mark_line(point=True).encode(x='Year:Q', y='PV Diff:Q')
-    st.altair_chart(ch3, use_container_width=True)
+    chart3_placeholder.altair_chart(ch3, use_container_width=True)
 
     combined = pd.concat([df_f.add_prefix('fixed_'), df_x.add_prefix('flex_')], axis=1)
     st.download_button("Download CSV", combined.to_csv(index=False), file_name='results.csv')
