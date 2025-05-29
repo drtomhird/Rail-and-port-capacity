@@ -157,24 +157,26 @@ def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_
         extra_haul = haul_flex - haul_fixed
         threshold = discount_rate * exp_cost
 
-        # decide which to apply
+        # decide which expansions to apply based solely on one-year haulage penalty vs benefit
+        # If extra haulage in this year exceeds WACC benefit of delaying, build full fixed chunks; otherwise delay
         if system_demand <= total_capacity:
-            # none
+            # No expansions needed
             dbct_cost = appt_cost = 0.0
-            haul = teardown = haul_flex
-        elif cost_fixed < cost_flex and extra_haul > threshold:
-            # apply fixed expansions
+            haul = haul_flex
+        elif extra_haul > discount_rate * exp_cost:
+            # Build all fixed-model chunks this year
             dbct_cost = alloc_fix['DBCT'] * exp_cost
             appt_cost = alloc_fix['APPT'] * exp_cost
             haul = haul_fixed
-            # update flex_ports to fixed state
+            # Update flex_ports to match fixed_ports
             for p in flex_ports:
-                p.capacity = caps_fix[p.name]
+                p.capacity = caps_fixed[p.name]
         else:
-            # apply flexible expansions
+            # Delay expansions (use minimal-flexible allocation)
             dbct_cost = alloc_flex['DBCT'] * exp_cost
             appt_cost = alloc_flex['APPT'] * exp_cost
             haul = haul_flex
+            # Update flex_ports for next year
             for p in flex_ports:
                 p.capacity = caps_temp[p.name]
 
