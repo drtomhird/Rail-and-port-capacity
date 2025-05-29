@@ -68,91 +68,122 @@ def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rat
 
 # --- Flexible model with cost trade-off ---
 def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
+    """Flexible model that tracks its own fixed-trajectory for correct comparisons"""
     results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
+    # create separate port lists for flexible vs fixed trajectories
+    flex_ports = [Port(p.name, p.capacity, p.plump, p.expansion_cost) for p in ports]
+    fixed_ports = [Port(p.name, p.capacity, p.plump, p.expansion_cost) for p in ports]
+
     for year in range(years + 1):
-        # 1) assign volumes to nearest port
+        # base assignment and usage
         outputs = compute_yearly_outputs(mines, year)
         assignments = {p.name: {} for p in ports}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
             vol = outputs[m.name]
             dists = {p.name: (m.distance_to_dbct if p.name=='DBCT' else m.distance_to_appt) for p in ports}
-            chosen = min(dists, key=dists.get)
-            assignments[chosen][m.name] = vol
-            usage[chosen] += vol
+            choice = min(dists, key=dists.get)
+            assignments[choice][m.name] = vol
+            usage[choice] += vol
+
         # record prior capacities
-        cap_prior = {p.name: p.capacity for p in ports}
-        system_demand = sum(usage.values())
-        system_capacity = sum(cap_prior.values())
-        # 2) no expansion if no shortfall
-        if system_demand <= system_capacity:
+        cap_flex = {p.name: p.capacity for p in flex_ports}
+        cap_fix  = {p.name: p.capacity for p in fixed_ports}
+        total_demand  = sum(usage.values())
+        total_capacity = sum(cap_flex.values())
+
+        # no expansion needed?
+        if total_demand <= total_capacity:
+            # flexible: no build, no permanent change
             dbct_cost = appt_cost = 0.0
-            haul = compute_haulage_costs(assignments, haulage_rate, mines)
+            # haul is simple nearest assignment
+            haul_flex = compute_haulage_costs(assignments, haulage_rate, mines)
+            alloc_flex = {n: 0 for n in cap_flex}
         else:
-            # 3) minimal plumps needed
-            N = int(np.ceil((system_demand - system_capacity) / plump))
-            # allocate N by largest excess demand per port
-            excess = {p.name: usage[p.name] - cap_prior[p.name] for p in ports}
-            alloc = {p.name: 0 for p in ports}
+            # minimal plumps needed
+            N = int(np.ceil((total_demand - total_capacity) / plump))
+            # allocate N chunks to flex_ports by excess demand
+            excess = {n: usage[n] - cap_flex[n] for n in cap_flex}
+            alloc_flex = {n: 0 for n in cap_flex}
             for _ in range(N):
-                choice = max(excess, key=excess.get)
-                alloc[choice] += 1
-                excess[choice] = usage[choice] - (cap_prior[choice] + alloc[choice] * plump)
-            # simulate flexible scenario: reroute
-            caps_flex = {p.name: cap_prior[p.name] + alloc[p.name] * plump for p in ports}
+                tgt = max(excess, key=excess.get)
+                alloc_flex[tgt] += 1
+                excess[tgt] = usage[tgt] - (cap_flex[tgt] + alloc_flex[tgt]*plump)
+            # apply flex expansions temporarily
+            caps_temp = {n: cap_flex[n] + alloc_flex[n]*plump for n in cap_flex}
+            # reroute for flex
             assign_flex = {k: dict(v) for k, v in assignments.items()}
-            usage_flex = usage.copy()
-            for p in ports:
-                if usage_flex[p.name] > caps_flex[p.name]:
-                    targets = [o for o in ports if usage_flex[o.name] < caps_flex[o.name]]
-                    items = sorted(assign_flex[p.name].items(),
-                                   key=lambda mv: ((next(m for m in mines if m.name==mv[0]).distance_to_dbct if p.name=='DBCT' else next(m for m in mines if m.name==mv[0]).distance_to_appt) * haulage_rate))
+            usage_tmp = usage.copy()
+            for p in flex_ports:
+                name = p.name
+                if usage_tmp[name] > caps_temp[name]:
+                    other = [o for o in flex_ports if usage_tmp[o.name] < caps_temp[o.name]][0]
+                    items = sorted(assign_flex[name].items(), key=lambda mv: ((next(m for m in mines if m.name==mv[0]).distance_to_dbct if name=='DBCT' else next(m for m in mines if m.name==mv[0]).distance_to_appt) * haulage_rate))
                     for mn, vol in items:
-                        if usage_flex[p.name] <= caps_flex[p.name]: break
-                        move = min(vol, usage_flex[p.name] - caps_flex[p.name])
-                        assign_flex[p.name][mn] -= move; usage_flex[p.name] -= move
-                        assign_flex[targets[0].name][mn] = assign_flex[targets[0].name].get(mn, 0) + move; usage_flex[targets[0].name] += move
+                        if usage_tmp[name] <= caps_temp[name]: break
+                        mv = min(vol, usage_tmp[name] - caps_temp[name])
+                        assign_flex[name][mn] -= mv; usage_tmp[name] -= mv
+                        assign_flex[other.name][mn] = assign_flex[other.name].get(mn,0) + mv; usage_tmp[other.name] += mv
             haul_flex = compute_haulage_costs(assign_flex, haulage_rate, mines)
-            cost_flex = (alloc['DBCT'] + alloc['APPT']) * exp_cost + haul_flex
-            # simulate fixed scenario: reroute
-            fixed_chunks = {p.name: int(np.ceil(max(0, usage[p.name] - cap_prior[p.name]) / plump)) for p in ports}
-            caps_fixed = {p.name: cap_prior[p.name] + fixed_chunks[p.name] * plump for p in ports}
-            assign_fixed = {k: dict(v) for k, v in assignments.items()}
-            usage_fixed = usage.copy()
-            for p in ports:
-                if usage_fixed[p.name] > caps_fixed[p.name]:
-                    targets = [o for o in ports if usage_fixed[o.name] < caps_fixed[o.name]]
-                    items_fx = sorted(assign_fixed[p.name].items(),
-                                      key=lambda mv: ((next(m for m in mines if m.name==mv[0]).distance_to_dbct if p.name=='DBCT' else next(m for m in mines if m.name==mv[0]).distance_to_appt) * haulage_rate))
-                    for mn, vol in items_fx:
-                        if usage_fixed[p.name] <= caps_fixed[p.name]: break
-                        move = min(vol, usage_fixed[p.name] - caps_fixed[p.name])
-                        assign_fixed[p.name][mn] -= move; usage_fixed[p.name] -= move
-                        assign_fixed[targets[0].name][mn] = assign_fixed[targets[0].name].get(mn, 0) + move; usage_fixed[targets[0].name] += move
-            haul_fixed = compute_haulage_costs(assign_fixed, haulage_rate, mines)
-            cost_fixed = (fixed_chunks['DBCT'] + fixed_chunks['APPT']) * exp_cost + haul_fixed
-            # 4) compare one-year haulage penalty vs WACC*exp_cost
-            extra_haul = haul_flex - haul_fixed
-            threshold = discount_rate * exp_cost
-            if extra_haul > threshold:
-                # build full fixed chunks
-                chunks_to_apply = fixed_chunks
-                haul = haul_fixed
-            else:
-                # keep minimal flex chunks
-                chunks_to_apply = alloc
-                haul = haul_flex
-            # apply expansions permanently
-            dbct_cost = chunks_to_apply['DBCT'] * exp_cost
-            appt_cost = chunks_to_apply['APPT'] * exp_cost
-            for p in ports:
-                p.capacity += chunks_to_apply[p.name] * plump
-        # record results
+
+        # now simulate fixed trajectory step for this year
+        # expansion based on fixed_ports
+        extra_fix = {n: usage[n] - cap_fix[n] for n in cap_fix}
+        alloc_fix = {}
+        for p in fixed_ports:
+            over = max(0, extra_fix[p.name])
+            chunks = int(np.ceil(over / plump))
+            alloc_fix[p.name] = chunks
+            p.capacity += chunks * plump
+        # reroute for fixed
+        assign_fix = {k: dict(v) for k, v in assignments.items()}
+        usage_f = usage.copy()
+        caps_fix = {p.name: p.capacity for p in fixed_ports}
+        for p in fixed_ports:
+            name = p.name
+            if usage_f[name] > caps_fix[name]:
+                other = [o for o in fixed_ports if usage_f[o.name] < caps_fix[o.name]][0]
+                items = sorted(assign_fix[name].items(), key=lambda mv: ((next(m for m in mines if m.name==mv[0]).distance_to_dbct if name=='DBCT' else next(m for m in mines if m.name==mv[0]).distance_to_appt) * haulage_rate))
+                for mn, vol in items:
+                    if usage_f[name] <= caps_fix[name]: break
+                    mv = min(vol, usage_f[name] - caps_fix[name])
+                    assign_fix[name][mn] -= mv; usage_f[name] -= mv
+                    assign_fix[other.name][mn] = assign_fix[other.name].get(mn,0) + mv; usage_f[other.name] += mv
+        haul_fixed = compute_haulage_costs(assign_fix, haulage_rate, mines)
+
+        # cost metrics
+        cost_flex  = sum(alloc_flex.values()) * exp_cost + haul_flex
+        cost_fixed = sum(alloc_fix.values()) * exp_cost + haul_fixed
+        extra_haul = haul_flex - haul_fixed
+        threshold = discount_rate * exp_cost
+
+        # decide which to apply
+        if system_demand <= total_capacity:
+            # none
+            dbct_cost = appt_cost = 0.0
+            haul = teardown = haul_flex
+        elif cost_fixed < cost_flex and extra_haul > threshold:
+            # apply fixed expansions
+            dbct_cost = alloc_fix['DBCT'] * exp_cost
+            appt_cost = alloc_fix['APPT'] * exp_cost
+            haul = haul_fixed
+            # update flex_ports to fixed state
+            for p in flex_ports:
+                p.capacity = caps_fix[p.name]
+        else:
+            # apply flexible expansions
+            dbct_cost = alloc_flex['DBCT'] * exp_cost
+            appt_cost = alloc_flex['APPT'] * exp_cost
+            haul = haul_flex
+            for p in flex_ports:
+                p.capacity = caps_temp[p.name]
+
         total = dbct_cost + appt_cost + haul
         results['dbct_cost'][year] = dbct_cost
         results['appt_cost'][year] = appt_cost
         results['haulage_cost'][year] = haul
         results['total_cost'][year] = total
+
     return results
 
 # --- NPV calculation ---
