@@ -151,7 +151,7 @@ with st.sidebar:
     PLUMP         = st.number_input("Capacity chunk (plump)", value=125)
     EXP_COST      = st.number_input("Expansion cost/plump", value=1250)
 
-            # Two mines scenario: outputs 500 each, 5% growth
+                # Two mines scenario: outputs 500 each, 5% growth
     base_df = pd.DataFrame({
         "Name": ["Mine 1", "Mine 2"],
         "Distance to DBCT": [80, 130],  # Updated distances
