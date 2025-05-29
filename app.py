@@ -66,61 +66,113 @@ def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rat
 
 # --- Flexible model ---
 def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
+    """Flexible strategy with cost-based expansion trade-offs"""
     results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
+        # 1) Compute outputs and nearest-port assignment
         outputs = compute_yearly_outputs(mines, year)
         assignments = {'DBCT': {}, 'APPT': {}}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
             vol = outputs[m.name]
-            dists = {p.name: m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt for p in ports}
+            dists = {p.name: (m.distance_to_dbct if p.name=='DBCT' else m.distance_to_appt) for p in ports}
             chosen = min(dists, key=dists.get)
             assignments[chosen][m.name] = vol
             usage[chosen] += vol
+
+        # 2) Determine if expansion needed
         cap_prior = {p.name: p.capacity for p in ports}
         system_demand = sum(usage.values())
         system_capacity = sum(cap_prior.values())
         if system_demand <= system_capacity:
-            dbct_cost = appt_cost = 0.0
+            # no expansion or rerouting
+            db_ct = ap_pt = 0.0
+            haul = compute_haulage_costs(assignments, haulage_rate, mines)
         else:
+            # i) minimal plumps to clear system shortfall
             N = int(np.ceil((system_demand - system_capacity) / plump))
-            allocated = {p.name: 0 for p in ports}
+            # ii) allocate N plumps to ports with largest excess demand
+            # excess demand by port: usage - prior capacity
+            excess = {p.name: usage[p.name] - cap_prior[p.name] for p in ports}
+            # allocate sequentially
+            alloc = {p.name:0 for p in ports}
             for _ in range(N):
-                rem = {p.name: usage[p.name] - (cap_prior[p.name] + allocated[p.name] * plump) for p in ports}
-                choice = max(rem, key=rem.get)
-                allocated[choice] += 1
-            dbct_cost = appt_cost = 0.0
+                choice = max(excess, key=excess.get)
+                alloc[choice] += 1
+                # update excess for that port
+                excess[choice] = usage[choice] - (cap_prior[choice] + alloc[choice]*plump)
+
+            # iii) compare with fixed-model chunks
+            fixed_chunks = 0
             for p in ports:
-                chunks = allocated[p.name]
-                p.capacity += chunks * plump
-                cost = chunks * exp_cost
-                if p.name == 'DBCT':
-                    dbct_cost += cost
-                else:
-                    appt_cost += cost
-        usage_after = {p.name: sum(assignments[p.name].values()) for p in ports}
-        for p in ports:
-            if usage_after[p.name] > p.capacity:
-                other = next(o for o in ports if o.name != p.name)
-                items = sorted(
-                    assignments[p.name].items(),
-                    key=lambda mv: ((next(m for m in mines if m.name == mv[0]).distance_to_dbct if p.name == 'DBCT' else next(m for m in mines if m.name == mv[0]).distance_to_appt) * haulage_rate)
-                )
-                for mine_name, vol in items:
-                    if usage_after[p.name] <= p.capacity:
-                        break
-                    move_vol = min(vol, usage_after[p.name] - p.capacity)
-                    assignments[p.name][mine_name] -= move_vol
-                    if assignments[p.name][mine_name] <= 0:
-                        del assignments[p.name][mine_name]
-                    assignments[other.name][mine_name] = assignments[other.name].get(mine_name, 0) + move_vol
-                    usage_after[p.name] -= move_vol
-                    usage_after[other.name] += move_vol
-        haulage = compute_haulage_costs(assignments, haulage_rate, mines)
-        total = dbct_cost + appt_cost + haulage
-        results['dbct_cost'][year] = dbct_cost
-        results['appt_cost'][year] = appt_cost
-        results['haulage_cost'][year] = haulage
+                over = usage[p.name] - cap_prior[p.name]
+                fixed_chunks += int(np.ceil(max(0, over) / plump))
+            # simulate haulage if flexible delayed (N plumps)
+            # apply N plumps and reroute
+            caps_N = cap_prior.copy()
+            for p in ports:
+                caps_N[p.name] += alloc[p.name] * plump
+            haul_N = compute_haulage_costs(assignments, haulage_rate, mines)
+            # reroute overload for N as per existing logic
+            usage2 = usage.copy()
+            for p in ports:
+                if usage2[p.name] > caps_N[p.name]:
+                    others = [o for o in ports if usage2[o.name] < caps_N[o.name]]
+                    items = []
+                    for mn, vol in assignments[p.name].items():
+                        m = next(x for x in mines if x.name==mn)
+                        costs = {o.name: ((m.distance_to_dbct if o.name=='DBCT' else m.distance_to_appt)*haulage_rate) for o in others}
+                        tgt = min(costs, key=costs.get)
+                        items.append((mn,vol,costs[tgt],tgt))
+                    items.sort(key=lambda x:x[2])
+                    for mn,vol,_,tgt in items:
+                        if usage2[p.name] <= caps_N[p.name]: break
+                        mv = min(vol, usage2[p.name]-caps_N[p.name])
+                        assignments[p.name][mn] -= mv; usage2[p.name]-=mv
+                        assignments[tgt][mn] = assignments[tgt].get(mn,0)+mv; usage2[tgt]+=mv
+            haul_N = compute_haulage_costs(assignments, haulage_rate, mines)
+            # iv) cost trade-off: WACC*exp_cost vs haulage difference
+            delta_haul = abs(haul_N - haul)
+            wacc_cost = discount_rate * exp_cost
+            # decide final chunks
+            if fixed_chunks > N and wacc_cost < delta_haul:
+                # build fixed_chunks
+                final_chunks = fixed_chunks
+            else:
+                final_chunks = N
+            # apply final_chunks
+            db_ct = ap_pt = 0.0
+            for p in ports:
+                cnt = 0
+                # allocate chunks same as above: by excess
+                for _ in range(final_chunks):
+                    choice = max(excess, key=excess.get)
+                    if p.name == choice:
+                        cnt += 1
+                        excess[choice] = usage[choice] - (cap_prior[choice] + cnt*plump)
+                amount = cnt * plump
+                p.capacity += amount
+                if p.name=='DBCT': db_ct += cnt*exp_cost
+                else: ap_pt += cnt*exp_cost
+            # reroute final overload
+            usage2 = usage.copy()
+            for p in ports:
+                if usage2[p.name] > p.capacity:
+                    other = next(o for o in ports if o.name!=p.name)
+                    items = sorted(
+                        assignments[p.name].items(),
+                        key=lambda mv: ((next(m for m in mines if m.name==mv[0]).distance_to_dbct if p.name=='DBCT' else next(m for m in mines if m.name==mv[0]).distance_to_appt) * haulage_rate)
+                    )
+                    for mn,vol in items:
+                        if usage2[p.name] <= p.capacity: break
+                        mv = min(vol, usage2[p.name]-p.capacity)
+                        assignments[p.name][mn] -= mv; usage2[p.name]-=mv
+                        assignments[other.name][mn] = assignments[other.name].get(mn,0)+mv; usage2[other.name]+=mv
+            haul = compute_haulage_costs(assignments, haulage_rate, mines)
+        total = db_ct + ap_pt + haul
+        results['dbct_cost'][year] = db_ct
+        results['appt_cost'][year] = ap_pt
+        results['haulage_cost'][year] = haul
         results['total_cost'][year] = total
     return results
 
