@@ -133,7 +133,10 @@ with st.sidebar:
         "Output0": [500,500],
         "Growth rate": [0.05,0.05]
     })
-    mines_df = st.experimental_data_editor(base_df, use_container_width=True)
+    try:
+        mines_df = st.data_editor(base_df, use_container_width=True)
+    except AttributeError:
+        mines_df = st.experimental_data_editor(base_df, use_container_width=True)
     run = st.button("Run simulation")
 
 if run:
