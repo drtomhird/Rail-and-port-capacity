@@ -121,10 +121,43 @@ def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_
             assign_fixed = {k: dict(v) for k,v in assignments.items()}
             haul_fixed = compute_haulage_costs(assign_fixed, haulage_rate, mines)
             cost_fixed = fixed_chunks*exp_cost + haul_fixed
-            # compare haulage penalty vs WACC*plump cost
+            # compare haulage penalty vs expansion cost threshold
             extra_haul = haul_flex - haul_fixed
-            threshold = discount_rate * exp_cost
+            threshold = exp_cost  # full plump cost threshold
+            # simulate reroute for fixed to compare apples-to-apples
+            # calculate per-port fixed chunks and fixed capacities
+            chunks_fixed = {}
+            cap_fixed = {}
+            for p in ports:
+                over = usage[p.name] - cap_prior[p.name]
+                c = int(np.ceil(max(0, over) / plump))
+                chunks_fixed[p.name] = c
+                cap_fixed[p.name] = cap_prior[p.name] + c * plump
+            # reroute for fixed scenario
+            assign_fixed_r = {k: dict(v) for k, v in assign_fixed.items()}
+            usage_fx = usage.copy()
+            for p in ports:
+                if usage_fx[p.name] > cap_fixed[p.name]:
+                    others = [o for o in ports if usage_fx[o.name] < cap_fixed[o.name]]
+                    items_fx = sorted(
+                        assign_fixed_r[p.name].items(),
+                        key=lambda mv: ((next(m for m in mines if m.name == mv[0]).distance_to_dbct if p.name=='DBCT' else next(m for m in mines if m.name == mv[0]).distance_to_appt) * haulage_rate)
+                    )
+                    for mn, vol in items_fx:
+                        if usage_fx[p.name] <= cap_fixed[p.name]:
+                            break
+                        mv_fx = min(vol, usage_fx[p.name] - cap_fixed[p.name])
+                        assign_fixed_r[p.name][mn] -= mv_fx; usage_fx[p.name] -= mv_fx
+                        assign_fixed_r[others[0].name][mn] = assign_fixed_r[others[0].name].get(mn, 0) + mv_fx; usage_fx[others[0].name] += mv_fx
+            haul_fixed = compute_haulage_costs(assign_fixed_r, haulage_rate, mines)
             if extra_haul > threshold:
+                # pick fixed scenario
+                appt_cost = sum(chunks_fixed[p] for p in chunks_fixed) * exp_cost
+                haul = haul_fixed
+            else:
+                # keep minimal flexible plumps
+                appt_cost = N * exp_cost
+                haul = haul_flex
                 # pick fixed
                 appt_cost = fixed_chunks * exp_cost
                 haul = haul_fixed
