@@ -32,8 +32,98 @@ def compute_haulage_costs(assignments, haulage_rate, mines):
             total += dist * haulage_rate * vol
     return total
 
-# Fixed and Flexible model definitions as before...
-# (omitted here for brevity; assume they remain unchanged)
+# --- Fixed model ---
+def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
+    results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
+    for year in range(years + 1):
+        outputs = compute_yearly_outputs(mines, year)
+        assignments = {'DBCT': {}, 'APPT': {}}
+        usage = {p.name: 0.0 for p in ports}
+        for m in mines:
+            vol = outputs[m.name]
+            dists = {p.name: m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt for p in ports}
+            chosen = min(dists, key=dists.get)
+            assignments[chosen][m.name] = vol
+            usage[chosen] += vol
+        dbct_cost = appt_cost = 0.0
+        for p in ports:
+            if usage[p.name] > p.capacity:
+                extra = usage[p.name] - p.capacity
+                chunks = int(np.ceil(extra / plump))
+                p.capacity += chunks * plump
+                cost = chunks * exp_cost
+                if p.name == 'DBCT':
+                    dbct_cost += cost
+                else:
+                    appt_cost += cost
+        haulage = compute_haulage_costs(assignments, haulage_rate, mines)
+        total = dbct_cost + appt_cost + haulage
+        results['dbct_cost'][year] = dbct_cost
+        results['appt_cost'][year] = appt_cost
+        results['haulage_cost'][year] = haulage
+        results['total_cost'][year] = total
+    return results
+
+# --- Flexible model ---
+def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
+    results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
+    for year in range(years + 1):
+        outputs = compute_yearly_outputs(mines, year)
+        assignments = {'DBCT': {}, 'APPT': {}}
+        usage = {p.name: 0.0 for p in ports}
+        for m in mines:
+            vol = outputs[m.name]
+            dists = {p.name: m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt for p in ports}
+            chosen = min(dists, key=dists.get)
+            assignments[chosen][m.name] = vol
+            usage[chosen] += vol
+        cap_prior = {p.name: p.capacity for p in ports}
+        system_demand = sum(usage.values())
+        system_capacity = sum(cap_prior.values())
+        if system_demand <= system_capacity:
+            dbct_cost = appt_cost = 0.0
+        else:
+            N = int(np.ceil((system_demand - system_capacity) / plump))
+            allocated = {p.name: 0 for p in ports}
+            for _ in range(N):
+                rem = {p.name: usage[p.name] - (cap_prior[p.name] + allocated[p.name] * plump) for p in ports}
+                choice = max(rem, key=rem.get)
+                allocated[choice] += 1
+            dbct_cost = appt_cost = 0.0
+            for p in ports:
+                chunks = allocated[p.name]
+                p.capacity += chunks * plump
+                cost = chunks * exp_cost
+                if p.name == 'DBCT':
+                    dbct_cost += cost
+                else:
+                    appt_cost += cost
+        usage_after = {p.name: sum(assignments[p.name].values()) for p in ports}
+        for p in ports:
+            if usage_after[p.name] > p.capacity:
+                other = next(o for o in ports if o.name != p.name)
+                items = sorted(
+                    assignments[p.name].items(),
+                    key=lambda mv: ((next(m for m in mines if m.name == mv[0]).distance_to_dbct if p.name == 'DBCT' else next(m for m in mines if m.name == mv[0]).distance_to_appt) * haulage_rate)
+                )
+                for mine_name, vol in items:
+                    if usage_after[p.name] <= p.capacity:
+                        break
+                    move_vol = min(vol, usage_after[p.name] - p.capacity)
+                    assignments[p.name][mine_name] -= move_vol
+                    if assignments[p.name][mine_name] <= 0:
+                        del assignments[p.name][mine_name]
+                    assignments[other.name][mine_name] = assignments[other.name].get(mine_name, 0) + move_vol
+                    usage_after[p.name] -= move_vol
+                    usage_after[other.name] += move_vol
+        haulage = compute_haulage_costs(assignments, haulage_rate, mines)
+        total = dbct_cost + appt_cost + haulage
+        results['dbct_cost'][year] = dbct_cost
+        results['appt_cost'][year] = appt_cost
+        results['haulage_cost'][year] = haulage
+        results['total_cost'][year] = total
+    return results
+
 # --- NPV helper ---
 def compute_npv(series, rate):
     return sum(series[t] / ((1 + rate) ** t) for t in series.index)
