@@ -159,7 +159,7 @@ with st.sidebar:
         "Growth rate": [0.05, 0.05]
     })
     try:
-        mines_df = st.data_editor(base_df, use_container_width=True)(base_df, use_container_width=True)
+        mines_df = st.data_editor(base_df, use_container_width=True)
     except AttributeError:
         mines_df = st.experimental_data_editor(base_df, use_container_width=True)
 
