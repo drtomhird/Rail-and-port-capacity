@@ -157,13 +157,9 @@ with st.sidebar:
         "Distance to DBCT": [80, 130],  # Updated distances
         "Output0": [500, 500],
         "Growth rate": [0.05, 0.05]
-    })],
-        "Distance to DBCT": [55+10*i for i in range(10)],
-        "Output0": [100]*10,
-        "Growth rate": [0.10]*10
     })
     try:
-        mines_df = st.data_editor(base_df, use_container_width=True)
+        mines_df = st.data_editor(base_df, use_container_width=True)(base_df, use_container_width=True)
     except AttributeError:
         mines_df = st.experimental_data_editor(base_df, use_container_width=True)
 
