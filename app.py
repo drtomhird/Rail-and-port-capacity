@@ -66,75 +66,82 @@ def fixed_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rat
 
 # Flexible model with N vs N+1 trade-off and rerouting
 def flexible_model(mines, ports, years, plump, exp_cost, haulage_rate, discount_rate):
+    """System-wide capacity expansions allocated to minimize haulage"""
     results = {'dbct_cost': {}, 'appt_cost': {}, 'haulage_cost': {}, 'total_cost': {}}
     for year in range(years + 1):
+        # 1. Compute outputs and nearest-port assignment
         outputs = compute_yearly_outputs(mines, year)
-        # initial nearest-port assignment
-        base_assign = {'DBCT': {}, 'APPT': {}}
+        assignments = {'DBCT': {}, 'APPT': {}}
         usage = {p.name: 0.0 for p in ports}
         for m in mines:
             vol = outputs[m.name]
-            dists = {p.name: m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt for p in ports}
+            dists = {p.name: (m.distance_to_dbct if p.name == 'DBCT' else m.distance_to_appt) for p in ports}
             chosen = min(dists, key=dists.get)
-            base_assign[chosen][m.name] = vol
+            assignments[chosen][m.name] = vol
             usage[chosen] += vol
-        # compute N
-        caps0 = {p.name: p.capacity for p in ports}
-        # Determine plumps needed system-wide (total demand vs total capacity)
-        total_excess = max(0, sum(usage.values()) - sum(caps0.values()))
-        N = int(np.ceil(total_excess / plump))
-        # helper to simulate with K plumps
-        def simulate(K):
-            caps = caps0.copy()
-            # allocate K plumps across ports same as before
+
+        # 2. Determine system-level expansions (only if demand exceeds capacity)
+        cap_prior = {p.name: p.capacity for p in ports}
+        system_demand = sum(usage.values())
+        system_capacity = sum(cap_prior.values())
+        if system_demand <= system_capacity:
+            # no expansion
+            db_ct = ap_pt = 0.0
+        else:
+            # number of plumps needed
+            N = int(np.ceil((system_demand - system_capacity) / plump))
+            # sequentially allocate plumps across ports
             allocated = {p.name: 0 for p in ports}
-            # distribute sequentially
-            for i in range(K):
-                rem = {n: usage[n] - (caps[n] + allocated[n]*plump) for n in caps}
-                elig = [n for n,d in rem.items() if d >= plump]
-                choice = max(elig, key=lambda n: rem[n]) if elig else max(rem, key=rem.get)
+            for _ in range(N):
+                # compute remaining excess per port relative to prior capacity + already allocated
+                rem = {p.name: usage[p.name] - (cap_prior[p.name] + allocated[p.name] * plump) for p in ports}
+                # choose port with largest excess demand
+                choice = max(rem, key=rem.get)
                 allocated[choice] += 1
             # apply expansions
             db_ct = ap_pt = 0.0
             for p in ports:
                 chunks = allocated[p.name]
-                caps[p.name] += chunks * plump
+                p.capacity += chunks * plump
                 if p.name == 'DBCT': db_ct += chunks * exp_cost
                 else: ap_pt += chunks * exp_cost
-            # reroute from over-capacity
-            assign = {k: dict(v) for k,v in base_assign.items()}
-            use2 = usage.copy()
-            for p in ports:
-                if use2[p.name] > caps[p.name]:
-                    targets = [o for o in ports if use2[o.name] < caps[o.name]]
-                    items = []
-                    for mn,vol in list(assign[p.name].items()):
-                        m = next(x for x in mines if x.name==mn)
-                        costs = {o.name: (m.distance_to_dbct if o.name=='DBCT' else m.distance_to_appt)*haulage_rate for o in targets}
-                        tgt = min(costs, key=costs.get)
-                        items.append((mn,vol,costs[tgt],tgt))
-                    items.sort(key=lambda x:x[2])
-                    for mn,vol,_,tgt in items:
-                        if use2[p.name] <= caps[p.name]: break
-                        mv = min(vol, use2[p.name]-caps[p.name])
-                        assign[p.name][mn] -= mv; use2[p.name] -= mv
-                        assign[tgt][mn] = assign[tgt].get(mn,0)+mv; use2[tgt] += mv
-            haul = compute_haulage_costs(assign, haulage_rate, mines)
-            total = db_ct + ap_pt + haul
-            return db_ct, ap_pt, haul, total
-        # simulate N and N+1
-        db_n, ap_n, ha_n, tot_n = simulate(N)
-        db_n1, ap_n1, ha_n1, tot_n1 = simulate(N+1)
-        # choose better
-        if tot_n1 < tot_n:
-            db_ct, ap_pt, haul, total = db_n1, ap_n1, ha_n1, tot_n1
-        else:
-            db_ct, ap_pt, haul, total = db_n, ap_n, ha_n, tot_n
-        # record
+
+        # 3. Reroute any overload (preserve original rerouting logic)
+        # recompute usage after expansions
+        usage_after = {p.name: sum(assignments[p.name].values()) for p in ports}
+        # reroute from overloaded ports
+        for p in ports:
+            if usage_after[p.name] > p.capacity:
+                other = [o for o in ports if o.name != p.name][0]
+                # sort mines by highest per-unit haul cost to this port
+                items = sorted(
+                    assignments[p.name].items(),
+                    key=lambda mv: (
+                        (next(m for m in mines if m.name == mv[0]).distance_to_dbct if p.name == 'DBCT'
+                         else next(m for m in mines if m.name == mv[0]).distance_to_appt) * haulage_rate
+                    ),
+                    reverse=True
+                )
+                for mine_name, vol in items:
+                    if usage_after[p.name] <= p.capacity:
+                        break
+                    move_vol = min(vol, usage_after[p.name] - p.capacity)
+                    # move to other port
+                    assignments[p.name][mine_name] -= move_vol
+                    if assignments[p.name][mine_name] <= 0:
+                        del assignments[p.name][mine_name]
+                    assignments[other.name][mine_name] = assignments[other.name].get(mine_name, 0) + move_vol
+                    usage_after[p.name] -= move_vol
+                    usage_after[other.name] += move_vol
+
+        # 4. Compute costs
+        haulage = compute_haulage_costs(assignments, haulage_rate, mines)
+        total = db_ct + ap_pt + haulage
         results['dbct_cost'][year] = db_ct
         results['appt_cost'][year] = ap_pt
-        results['haulage_cost'][year] = haul
+        results['haulage_cost'][year] = haulage
         results['total_cost'][year] = total
+
     return results
 
 # NPV calculator
